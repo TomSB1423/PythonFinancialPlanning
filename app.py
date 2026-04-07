@@ -51,8 +51,9 @@ with st.sidebar:
     if uploaded is not None:
         try:
             import json
+
             from pydantic_core import ValidationError
-            
+
             data = json.loads(uploaded.read())
             st.session_state.profile = UserProfile.model_validate(data)
             st.success("✓ Profile loaded successfully!")

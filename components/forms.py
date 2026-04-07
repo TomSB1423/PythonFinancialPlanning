@@ -6,6 +6,7 @@ from datetime import date
 
 import streamlit as st
 
+from components.multi_step_form import FormStep, MultiStepForm
 from models.financial_data import (
     Asset,
     AssetCategory,
@@ -16,7 +17,6 @@ from models.financial_data import (
     StudentLoanPlan,
     TaxWrapper,
 )
-from components.multi_step_form import FormStep, MultiStepForm
 
 
 def asset_form(key_prefix: str = "new_asset", defaults: Asset | None = None) -> Asset | None:
@@ -241,68 +241,67 @@ def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Deb
                 "student_loan_start_year": None,
             }
 
-        else:
-            # Student Loan conditional fields
-            st.info("Plan 2 repayments are calculated as a percentage of projected salary above the threshold.")
+        # Student Loan conditional fields
+        st.info("Plan 2 repayments are calculated as a percentage of projected salary above the threshold.")
 
-            s_col1, s_col2 = st.columns(2)
-            with s_col1:
-                student_plan = StudentLoanPlan(
-                    st.selectbox(
-                        "Student Loan Plan",
-                        options=[StudentLoanPlan.PLAN_2.value],
-                        index=0,
-                        key=f"{key_prefix}_sl_plan",
-                    )
+        s_col1, s_col2 = st.columns(2)
+        with s_col1:
+            student_plan = StudentLoanPlan(
+                st.selectbox(
+                    "Student Loan Plan",
+                    options=[StudentLoanPlan.PLAN_2.value],
+                    index=0,
+                    key=f"{key_prefix}_sl_plan",
                 )
-                student_threshold = st.number_input(
-                    "Repayment Threshold (£ / year)",
-                    min_value=0.0,
-                    value=float(d.student_loan_repayment_threshold or 27_295.0),
-                    step=100.0,
-                    key=f"{key_prefix}_sl_threshold",
-                )
-
-            with s_col2:
-                student_rate = st.number_input(
-                    "Repayment Rate (% of income above threshold)",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=float((d.student_loan_repayment_rate or 0.09) * 100),
-                    step=0.5,
-                    key=f"{key_prefix}_sl_rate",
-                )
-                student_write_off_years = st.number_input(
-                    "Write-off Horizon (years)",
-                    min_value=1,
-                    max_value=60,
-                    value=int(d.student_loan_write_off_years or 30),
-                    step=1,
-                    key=f"{key_prefix}_sl_writeoff",
-                )
-
-            student_start_year = st.number_input(
-                "Repayment Start Year",
-                min_value=1900,
-                max_value=2200,
-                value=int(d.student_loan_start_year or date.today().year),
-                step=1,
-                key=f"{key_prefix}_sl_start",
+            )
+            student_threshold = st.number_input(
+                "Repayment Threshold (£ / year)",
+                min_value=0.0,
+                value=float(d.student_loan_repayment_threshold or 27_295.0),
+                step=100.0,
+                key=f"{key_prefix}_sl_threshold",
             )
 
-            # Validation feedback for student loan
-            if student_write_off_years < 20:
-                st.warning("⚠ Write-off period less than 20 years is unusual for Plan 2 loans.")
+        with s_col2:
+            student_rate = st.number_input(
+                "Repayment Rate (% of income above threshold)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float((d.student_loan_repayment_rate or 0.09) * 100),
+                step=0.5,
+                key=f"{key_prefix}_sl_rate",
+            )
+            student_write_off_years = st.number_input(
+                "Write-off Horizon (years)",
+                min_value=1,
+                max_value=60,
+                value=int(d.student_loan_write_off_years or 30),
+                step=1,
+                key=f"{key_prefix}_sl_writeoff",
+            )
 
-            return {
-                "monthly_payment": 0.0,
-                "remaining_term_months": 0,
-                "student_loan_plan": student_plan,
-                "student_loan_repayment_threshold": student_threshold,
-                "student_loan_repayment_rate": student_rate / 100,
-                "student_loan_write_off_years": student_write_off_years,
-                "student_loan_start_year": student_start_year,
-            }
+        student_start_year = st.number_input(
+            "Repayment Start Year",
+            min_value=1900,
+            max_value=2200,
+            value=int(d.student_loan_start_year or date.today().year),
+            step=1,
+            key=f"{key_prefix}_sl_start",
+        )
+
+        # Validation feedback for student loan
+        if student_write_off_years < 20:
+            st.warning("⚠ Write-off period less than 20 years is unusual for Plan 2 loans.")
+
+        return {
+            "monthly_payment": 0.0,
+            "remaining_term_months": 0,
+            "student_loan_plan": student_plan,
+            "student_loan_repayment_threshold": student_threshold,
+            "student_loan_repayment_rate": student_rate / 100,
+            "student_loan_write_off_years": student_write_off_years,
+            "student_loan_start_year": student_start_year,
+        }
 
     def on_submit(fields: dict) -> dict:
         """Finalize debt fields."""

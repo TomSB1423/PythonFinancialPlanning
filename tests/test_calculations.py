@@ -29,6 +29,7 @@ from calculations.retirement import (
 from calculations.tax import (
     capital_gains_tax,
     income_tax,
+    inheritance_tax,
     national_insurance,
     pension_drawdown_tax,
 )
@@ -52,13 +53,13 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 #  Fixtures
 # ══════════════════════════════════════════════════════════════════════════
 
-@pytest.fixture()
+@pytest.fixture
 def sample_profile() -> UserProfile:
     with open(DATA_DIR / "sample_profile.json") as f:
         return UserProfile.model_validate(json.load(f))
 
 
-@pytest.fixture()
+@pytest.fixture
 def typical_assets() -> list[Asset]:
     """A 30-year-old with an ISA, a pension, and a house."""
     return [
@@ -71,7 +72,7 @@ def typical_assets() -> list[Asset]:
     ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def typical_debts() -> list[Debt]:
     """Mortgage + student loan."""
     return [
@@ -429,7 +430,7 @@ class TestMilestones:
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@pytest.fixture()
+@pytest.fixture
 def mortgage_profile() -> UserProfile:
     """Profile with a mortgage debt and liquid savings — no life goals."""
     return UserProfile(
@@ -455,7 +456,7 @@ def mortgage_profile() -> UserProfile:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def goal_mortgage_profile() -> UserProfile:
     """Profile that buys a house via a mortgage-funded life goal."""
     from datetime import date as _d
@@ -571,7 +572,6 @@ class TestMortgageMilestones:
 
     def test_mortgage_info_at_retirement_extends(self) -> None:
         """Mortgage extending past retirement age should be flagged."""
-        from datetime import date as _d
         profile = UserProfile(
             annual_salary=50_000,
             monthly_savings=1_000,
@@ -666,3 +666,71 @@ class TestMortgageAwareRetirement:
             mortgage_annual_payment=0, mortgage_years_remaining=0,
         )
         assert sim_a["end_balance"].tolist() == sim_b["end_balance"].tolist()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Inheritance Tax
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestInheritanceTax:
+    def test_below_nil_rate_band_no_tax(self) -> None:
+        """Estate fully within NRB and RNRB → zero IHT."""
+        result = inheritance_tax(300_000, has_residential_property=True)
+        assert result["iht_due"] == 0.0
+        assert result["taxable_estate"] == 0.0
+
+    def test_above_bands_standard_rate(self) -> None:
+        """Estate of £1M with property → 40% on amount above £500k."""
+        result = inheritance_tax(1_000_000, has_residential_property=True)
+        assert result["taxable_estate"] == 500_000.0
+        assert result["iht_due"] == pytest.approx(200_000.0)
+        assert result["effective_rate"] == pytest.approx(0.20, rel=1e-3)
+
+    def test_no_residential_property_smaller_band(self) -> None:
+        """Without residential property the RNRB does not apply."""
+        result_with = inheritance_tax(600_000, has_residential_property=True)
+        result_without = inheritance_tax(600_000, has_residential_property=False)
+        assert result_without["iht_due"] > result_with["iht_due"]
+        # Without RNRB taxable is £275k; with RNRB taxable is £100k
+        assert result_without["taxable_estate"] == pytest.approx(275_000.0)
+        assert result_with["taxable_estate"] == pytest.approx(100_000.0)
+
+    def test_spouse_transfer_doubles_bands(self) -> None:
+        """Spousal transfer doubles both NRB and RNRB."""
+        result_single = inheritance_tax(900_000, has_residential_property=True, spouse_transfer=False)
+        result_spouse = inheritance_tax(900_000, has_residential_property=True, spouse_transfer=True)
+        # Spouse bands = £650k + £350k = £1M, so £900k estate → zero IHT
+        assert result_spouse["iht_due"] == 0.0
+        assert result_single["iht_due"] > 0.0
+
+    def test_charity_rate_reduction(self) -> None:
+        """Leaving 10%+ to charity drops rate from 40% to 36%."""
+        result_no_charity = inheritance_tax(1_000_000, has_residential_property=True, charity_fraction=0.0)
+        result_charity = inheritance_tax(1_000_000, has_residential_property=True, charity_fraction=0.10)
+        # Charity reduces taxable estate and applies lower rate
+        assert result_charity["iht_due"] < result_no_charity["iht_due"]
+
+    def test_zero_estate(self) -> None:
+        """Zero estate → all zeros, no division-by-zero errors."""
+        result = inheritance_tax(0.0)
+        assert result["iht_due"] == 0.0
+        assert result["effective_rate"] == 0.0
+        assert result["taxable_estate"] == 0.0
+
+    def test_effective_rate_calculated_correctly(self) -> None:
+        """Effective rate = iht_due / gross_estate."""
+        result = inheritance_tax(1_000_000, has_residential_property=True)
+        expected_rate = result["iht_due"] / result["gross_estate"]
+        assert result["effective_rate"] == pytest.approx(expected_rate, rel=1e-4)
+
+    def test_nil_rate_band_used_capped_at_estate(self) -> None:
+        """For small estates the band used is capped at the estate value."""
+        result = inheritance_tax(100_000, has_residential_property=False)
+        assert result["nil_rate_band_used"] == 100_000.0
+
+    def test_residence_nil_rate_band_used_capped_at_remaining(self) -> None:
+        """RNRB used is capped at remaining estate after NRB."""
+        # Estate £400k, NRB £325k → remaining £75k, RNRB capped at £75k
+        result = inheritance_tax(400_000, has_residential_property=True)
+        assert result["residence_nil_rate_band_used"] == pytest.approx(75_000.0)
+        assert result["iht_due"] == 0.0
