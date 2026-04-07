@@ -1,0 +1,124 @@
+{
+  "name": "Sample Financial Plan",
+  "last_updated": "2026-04-07",
+  "assets": [
+    {
+      "name": "Stocks & Shares ISA",
+      "category": "ISA",
+      "current_value": 60000,
+      "annual_growth_rate": 0.07,
+      "is_liquid": true,
+      "tax_wrapper": "ISA",
+      "annual_contribution": 0
+    }
+  ],
+  "debts": [
+    {
+      "name": "Student Loan (Plan 2)",
+      "category": "Student Loan",
+      "outstanding_balance": 60000,
+      "interest_rate": 0.05,
+      "monthly_payment": 0,
+      "remaining_term_months": 0,
+      "student_loan_plan": "Plan 2",
+      "student_loan_repayment_threshold": 27295,
+      "student_loan_repayment_rate": 0.09,
+      "student_loan_write_off_years": 30,
+      "student_loan_start_year": 2021
+    }
+  ],
+  "life_goals": [
+    {
+      "name": "Buy a house",
+      "target_cost": 350000,
+      "target_year": 2029,
+      "funding_source": "Mortgage",
+      "priority": 1,
+      "annual_ongoing_cost": 0,
+      "ongoing_years": 0,
+      "notes": "3-bed house, need ~£35k deposit + stamp duty",
+      "deposit_percentage": 0.10,
+      "mortgage_rate": 0.045,
+      "mortgage_term_years": 25,
+      "loan_interest_rate": 0.05,
+      "loan_term_years": 5
+    },
+    {
+      "name": "Build a cabin",
+      "target_cost": 80000,
+      "target_year": 2033,
+      "funding_source": "Savings",
+      "priority": 2,
+      "annual_ongoing_cost": 0,
+      "ongoing_years": 0,
+      "notes": "Small cabin on some land in the countryside",
+      "deposit_percentage": 0.10,
+      "mortgage_rate": 0.045,
+      "mortgage_term_years": 25,
+      "loan_interest_rate": 0.05,
+      "loan_term_years": 5
+    },
+    {
+      "name": "Children (two)",
+      "target_cost": 30000,
+      "target_year": 2031,
+      "funding_source": "Savings",
+      "priority": 1,
+      "annual_ongoing_cost": 15000,
+      "ongoing_years": 18,
+      "notes": "Estimated cost for two children, starting 2031",
+      "deposit_percentage": 0.10,
+      "mortgage_rate": 0.045,
+      "mortgage_term_years": 25,
+      "loan_interest_rate": 0.05,
+      "loan_term_years": 5
+    },
+    {
+      "name": "Renovate sailing boat",
+      "target_cost": 40000,
+      "target_year": 2041,
+      "funding_source": "Savings",
+      "priority": 3,
+      "annual_ongoing_cost": 0,
+      "ongoing_years": 0,
+      "notes": "Buy and renovate a classic sailing boat",
+      "deposit_percentage": 0.10,
+      "mortgage_rate": 0.045,
+      "mortgage_term_years": 25,
+      "loan_interest_rate": 0.05,
+      "loan_term_years": 5
+    },
+    {
+      "name": "Buy a car",
+      "target_cost": 30000,
+      "target_year": 2028,
+      "funding_source": "Loan",
+      "priority": 2,
+      "annual_ongoing_cost": 0,
+      "ongoing_years": 0,
+      "notes": "New family car financed with a personal loan",
+      "deposit_percentage": 0.15,
+      "mortgage_rate": 0.045,
+      "mortgage_term_years": 25,
+      "loan_interest_rate": 0.0499,
+      "loan_term_years": 5
+    }
+  ],
+  "retirement": {
+    "current_age": 30,
+    "target_retirement_age": 60,
+    "desired_annual_income": 35000,
+    "state_pension_age": 67,
+    "expected_state_pension": 11502,
+    "defined_benefit_pensions": [],
+    "life_expectancy": 90,
+    "estimated_healthcare_costs": 5000,
+    "healthcare_start_age": 80
+  },
+  "annual_salary": 51000,
+  "monthly_savings": 1500,
+  "annual_living_expenses": 24000,
+  "annual_holiday_budget": 2400,
+  "annual_retirement_living_expenses": 21600,
+  "annual_retirement_holiday_budget": 1800
+}
