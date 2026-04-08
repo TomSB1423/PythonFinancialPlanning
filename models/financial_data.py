@@ -134,6 +134,30 @@ class RetirementProfile(BaseModel):
     healthcare_start_age: int = Field(default=80, ge=60, le=100)
 
 
+class InsuranceType(str, Enum):
+    LIFE = "Life"
+    CRITICAL_ILLNESS = "Critical Illness"
+    INCOME_PROTECTION = "Income Protection"
+    BUILDINGS = "Buildings"
+    CONTENTS = "Contents"
+    PRIVATE_MEDICAL = "Private Medical"
+    OTHER = "Other"
+
+
+class InsurancePolicy(BaseModel):
+    name: str
+    insurance_type: InsuranceType = InsuranceType.OTHER
+    cover_amount: float = Field(ge=0, description="Total cover amount (£)")
+    monthly_premium: float = Field(ge=0, description="Monthly premium (£)")
+    expiry_year: int | None = Field(default=None, ge=2000, le=2100, description="Year cover expires")
+    notes: str = ""
+
+
+class EmergencyFund(BaseModel):
+    current_balance: float = Field(default=0.0, ge=0, description="Current emergency fund balance (£)")
+    target_months: int = Field(default=6, ge=1, le=24, description="Target months of expenses covered")
+
+
 class UserProfile(BaseModel):
     name: str = "My Financial Plan"
     last_updated: date = Field(default_factory=date.today)
@@ -147,3 +171,5 @@ class UserProfile(BaseModel):
     annual_holiday_budget: float = Field(default=DEFAULT_ANNUAL_HOLIDAY_BUDGET, ge=0)
     annual_retirement_living_expenses: float | None = Field(default=None, ge=0)
     annual_retirement_holiday_budget: float | None = Field(default=None, ge=0)
+    insurance_policies: list[InsurancePolicy] = Field(default_factory=list)
+    emergency_fund: EmergencyFund = Field(default_factory=EmergencyFund)

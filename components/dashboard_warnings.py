@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from models.financial_data import UserProfile, DebtCategory, GoalFunding, StudentLoanPlan
+from models.financial_data import DebtCategory, UserProfile
 
 
 @dataclass

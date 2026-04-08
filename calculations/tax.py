@@ -10,6 +10,10 @@ from models.assumptions import (
     CGT_BASIC_RATE_PROPERTY,
     CGT_HIGHER_RATE,
     CGT_HIGHER_RATE_PROPERTY,
+    IHT_CHARITY_RATE,
+    IHT_NIL_RATE_BAND,
+    IHT_RATE,
+    IHT_RESIDENCE_NIL_RATE_BAND,
     NI_PRIMARY_THRESHOLD,
     NI_RATE_MAIN,
     NI_RATE_UPPER,
@@ -105,6 +109,52 @@ def capital_gains_tax(gain: float, is_property: bool = False, is_higher_rate: bo
     else:
         rate = CGT_HIGHER_RATE if is_higher_rate else CGT_BASIC_RATE
     return round(taxable * rate, 2)
+
+
+class IHTResult(TypedDict):
+    gross_estate: float
+    nil_rate_band_used: float
+    residence_nil_rate_band_used: float
+    taxable_estate: float
+    iht_due: float
+    effective_rate: float
+
+
+def inheritance_tax(
+    estate_value: float,
+    has_residential_property: bool = True,
+    spouse_transfer: bool = False,
+    charity_fraction: float = 0.0,
+) -> IHTResult:
+    """Estimate IHT on a UK estate.
+
+    - *estate_value*: total estate (assets minus debts)
+    - *has_residential_property*: eligible for RNRB (left to direct descendants)
+    - *spouse_transfer*: if inheriting from spouse, doubles the nil-rate bands
+    - *charity_fraction*: fraction of estate left to charity (0.10+ = 36% rate)
+
+    Returns gross estate, bands used, taxable estate, IHT due, and effective rate.
+    """
+    band_multiplier = 2 if spouse_transfer else 1
+    nrb = IHT_NIL_RATE_BAND * band_multiplier
+    rnrb = IHT_RESIDENCE_NIL_RATE_BAND * band_multiplier if has_residential_property else 0.0
+
+    total_band = nrb + rnrb
+    taxable = max(0.0, estate_value - total_band)
+
+    charity_amount = estate_value * max(0.0, min(1.0, charity_fraction))
+    taxable = max(0.0, taxable - charity_amount)
+    rate = IHT_CHARITY_RATE if charity_fraction >= 0.10 else IHT_RATE
+    iht = taxable * rate
+
+    return {
+        "gross_estate": round(estate_value, 2),
+        "nil_rate_band_used": round(min(estate_value, nrb), 2),
+        "residence_nil_rate_band_used": round(min(max(0.0, estate_value - nrb), rnrb), 2),
+        "taxable_estate": round(taxable, 2),
+        "iht_due": round(iht, 2),
+        "effective_rate": round(iht / estate_value, 4) if estate_value > 0 else 0.0,
+    }
 
 
 def pension_drawdown_tax(

@@ -126,6 +126,22 @@ DEFAULT_DEBTS: list[DefaultDebtConfig] = [
     },
 ]
 
+# ── Inheritance Tax ────────────────────────────────────────────────────────
+
+IHT_NIL_RATE_BAND = 325_000
+IHT_RESIDENCE_NIL_RATE_BAND = 175_000
+IHT_RATE = 0.40
+IHT_CHARITY_RATE = 0.36  # reduced rate when 10%+ of estate left to charity
+IHT_TAPER_THRESHOLDS: list[tuple[float, float]] = [
+    # (years_since_gift, fraction_of_full_tax)
+    (3, 1.00),
+    (4, 0.80),
+    (5, 0.60),
+    (6, 0.40),
+    (7, 0.20),
+    (float("inf"), 0.0),
+]
+
 # ── Default life goal costs (GBP) ─────────────────────────────────────────
 
 
