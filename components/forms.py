@@ -19,6 +19,9 @@ from models.financial_data import (
 )
 
 
+# ── Asset Form ─────────────────────────────────────────────────────────
+
+
 def asset_form(key_prefix: str = "new_asset", defaults: Asset | None = None) -> Asset | None:
     """Render an asset input form using multi-step pattern. Returns Asset on submit, None otherwise."""
     d = defaults or Asset(name="", current_value=0)
@@ -67,7 +70,7 @@ def asset_form(key_prefix: str = "new_asset", defaults: Asset | None = None) -> 
 
         # Validation feedback for growth rate
         if growth == 0:
-            st.warning("⚠ Zero growth rate — asset value won't increase. Reconsider if realistic.")
+            st.warning("Zero growth rate — asset value won't increase. Reconsider if realistic.")
 
         contribution = st.number_input(
             "Annual Contribution (£)",
@@ -142,6 +145,9 @@ def asset_form(key_prefix: str = "new_asset", defaults: Asset | None = None) -> 
         asset_data = on_submit(result)
         return Asset(**asset_data)
     return None
+
+
+# ── Debt Form ──────────────────────────────────────────────────────────
 
 
 def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Debt | None:
@@ -220,14 +226,14 @@ def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Deb
 
             # Validation feedback
             if payment > 0 and term == 0:
-                st.error("❌ Monthly payment set but term is 0 months. Debt would never be paid off.")
+                st.error("Monthly payment set but term is 0 months. Debt would never be paid off.")
             elif payment == 0 and term > 0:
-                st.warning("⚠ No monthly payment but term is set. Debt won't decrease.")
+                st.warning("No monthly payment but term is set. Debt won't decrease.")
             elif payment > 0 and d.outstanding_balance > 0:
                 months_to_payoff = d.outstanding_balance / payment if payment > 0 else float("inf")
                 if months_to_payoff > term:
                     st.warning(
-                        f"⚠ Payment £{payment}/month would take {months_to_payoff:.0f} months "
+                        f"Payment £{payment}/month would take {months_to_payoff:.0f} months "
                         f"to clear debt, longer than term of {term} months."
                     )
 
@@ -291,7 +297,7 @@ def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Deb
 
         # Validation feedback for student loan
         if student_write_off_years < 20:
-            st.warning("⚠ Write-off period less than 20 years is unusual for Plan 2 loans.")
+            st.warning("Write-off period less than 20 years is unusual for Plan 2 loans.")
 
         return {
             "monthly_payment": 0.0,
@@ -333,6 +339,9 @@ def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Deb
         debt_data = on_submit(result)
         return Debt(**debt_data)
     return None
+
+
+# ── Goal Form ──────────────────────────────────────────────────────────
 
 
 def goal_form(key_prefix: str = "new_goal", defaults: LifeGoal | None = None) -> LifeGoal | None:

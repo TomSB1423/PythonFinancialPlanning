@@ -1,4 +1,4 @@
-# 💰 Financial Planning Playground
+# Financial Planning Playground
 
 A personal net worth tracker and retirement planner built with Streamlit. Focused on big-picture financial planning — not day-to-day budgeting.
 

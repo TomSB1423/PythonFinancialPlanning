@@ -8,6 +8,9 @@ if TYPE_CHECKING:
     from models.financial_data import Asset, Debt
 
 
+# ── Totals ─────────────────────────────────────────────────────────────
+
+
 def total_assets(assets: list[Asset]) -> float:
     return sum(a.current_value for a in assets)
 
@@ -18,6 +21,9 @@ def total_debts(debts: list[Debt]) -> float:
 
 def net_worth(assets: list[Asset], debts: list[Debt]) -> float:
     return total_assets(assets) - total_debts(debts)
+
+
+# ── Breakdown ──────────────────────────────────────────────────────────
 
 
 def liquidity_breakdown(assets: list[Asset]) -> dict[str, float]:
@@ -44,6 +50,9 @@ def asset_allocation(assets: list[Asset]) -> dict[str, dict[str, float]]:
         cat: {"value": val, "percentage": val / total * 100 if total > 0 else 0}
         for cat, val in by_category.items()
     }
+
+
+# ── Ratios ─────────────────────────────────────────────────────────────
 
 
 def debt_to_asset_ratio(assets: list[Asset], debts: list[Debt]) -> float:

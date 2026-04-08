@@ -6,6 +6,9 @@ from models.assumptions import GROWTH_RATES
 from models.financial_data import Asset
 
 
+# ── AssetState ─────────────────────────────────────────────────────────
+
+
 class AssetState:
     """Mutable projection state for a single asset."""
 

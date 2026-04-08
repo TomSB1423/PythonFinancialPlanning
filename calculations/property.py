@@ -7,6 +7,9 @@ import pandas as pd
 from calculations.instruments.helpers import mortgage_monthly_payment
 
 
+# ── Single-property metrics ────────────────────────────────────────────
+
+
 def calculate_ltv(mortgage_balance: float, property_value: float) -> float:
     """Loan-to-value ratio as a percentage."""
     if property_value <= 0:
@@ -17,6 +20,9 @@ def calculate_ltv(mortgage_balance: float, property_value: float) -> float:
 def calculate_equity(property_value: float, mortgage_balance: float) -> float:
     """Equity in a property (value minus outstanding mortgage)."""
     return round(property_value - mortgage_balance, 2)
+
+
+# ── Amortization ───────────────────────────────────────────────────────
 
 
 def amortization_schedule(
@@ -62,6 +68,9 @@ def amortization_schedule(
         })
 
     return pd.DataFrame(rows)
+
+
+# ── Multi-year projections ─────────────────────────────────────────────
 
 
 def equity_over_time(

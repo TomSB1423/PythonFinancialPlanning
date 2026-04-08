@@ -46,6 +46,9 @@ class PensionDrawdownTaxResult(TypedDict):
     net_withdrawal: float
 
 
+# ── Income Tax ─────────────────────────────────────────────────────────
+
+
 def _adjusted_personal_allowance(gross_income: float) -> float:
     """Personal allowance tapers by £1 for every £2 over £100k."""
     if gross_income <= PERSONAL_ALLOWANCE_TAPER_THRESHOLD:
@@ -93,6 +96,9 @@ def income_tax(gross_income: float) -> IncomeTaxResult:
     }
 
 
+# ── National Insurance ────────────────────────────────────────────────
+
+
 def national_insurance(gross_salary: float) -> float:
     """Employee Class 1 NI contributions."""
     if gross_salary <= NI_PRIMARY_THRESHOLD:
@@ -102,6 +108,9 @@ def national_insurance(gross_salary: float) -> float:
     if gross_salary > NI_UPPER_EARNINGS_LIMIT:
         ni_tax += (gross_salary - NI_UPPER_EARNINGS_LIMIT) * NI_RATE_UPPER
     return round(ni_tax, 2)
+
+
+# ── Capital Gains Tax ─────────────────────────────────────────────────
 
 
 def capital_gains_tax(gain: float, is_property: bool = False, is_higher_rate: bool = False) -> float:
@@ -114,6 +123,9 @@ def capital_gains_tax(gain: float, is_property: bool = False, is_higher_rate: bo
     else:
         rate = CGT_HIGHER_RATE if is_higher_rate else CGT_BASIC_RATE
     return round(taxable * rate, 2)
+
+
+# ── Inheritance Tax ───────────────────────────────────────────────────
 
 
 class IHTResult(TypedDict):
@@ -160,6 +172,9 @@ def inheritance_tax(
         "iht_due": round(iht, 2),
         "effective_rate": round(iht / estate_value, 4) if estate_value > 0 else 0.0,
     }
+
+
+# ── Pension Drawdown ──────────────────────────────────────────────────
 
 
 def pension_drawdown_tax(
