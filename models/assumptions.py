@@ -56,6 +56,13 @@ STATE_PENSION_FULL_RATE = 11_973  # 2025/26 full new state pension (triple lock)
 
 ISA_ANNUAL_ALLOWANCE = 20_000
 
+# ── Student Loans ──────────────────────────────────────────────────────────
+
+STUDENT_LOAN_THRESHOLDS: dict[str, float] = {
+    "Plan 2": 29_385,  # 2025/26 per GOV.UK
+    "Plan 5": 25_000,  # 2025/26 per GOV.UK
+}
+
 # ── Scenario multipliers (applied to base growth rates) ───────────────────
 
 SCENARIOS: dict[str, float] = {
@@ -67,7 +74,6 @@ SCENARIOS: dict[str, float] = {
 # ── Default income & spending ──────────────────────────────────────────────
 
 DEFAULT_ANNUAL_SALARY = 51_000
-DEFAULT_MONTHLY_SAVINGS = 1_500
 DEFAULT_ANNUAL_LIVING_EXPENSES = 24_000
 DEFAULT_ANNUAL_HOLIDAY_BUDGET = 2_400
 
@@ -119,7 +125,7 @@ DEFAULT_DEBTS: list[DefaultDebtConfig] = [
         "monthly_payment": 0,
         "remaining_term_months": 0,
         "student_loan_plan": "Plan 2",
-        "student_loan_repayment_threshold": 27_295,
+        "student_loan_repayment_threshold": 29_385,
         "student_loan_repayment_rate": 0.09,
         "student_loan_write_off_years": 30,
         "student_loan_start_year": 2021,
@@ -162,7 +168,7 @@ class DefaultGoalConfig(TypedDict, total=False):
 DEFAULT_GOALS: dict[str, DefaultGoalConfig] = {
     "Buy a house": {
         "cost": 350_000, "year_offset": 3, "funding": "Mortgage",
-        "deposit_percentage": 0.10, "mortgage_rate": 0.045, "mortgage_term_years": 25,
+        "deposit_percentage": 0.10, "mortgage_rate": 0.055, "mortgage_term_years": 25,
     },
     "Build a cabin": {"cost": 80_000, "year_offset": 7, "funding": "Savings"},
     "Children (two)": {

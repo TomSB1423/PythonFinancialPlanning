@@ -40,7 +40,7 @@ from components.charts import (
     scenario_band_chart,
 )
 from components.dashboard_warnings import get_financial_health_checks
-from models.assumptions import INFLATION_RATE
+from models.assumptions import GROWTH_RATES, INFLATION_RATE
 from models.financial_data import AssetCategory, UserProfile
 
 st.set_page_config(page_title="Plan", layout="wide")
@@ -163,13 +163,13 @@ if show_real:
 
 # Build annotations for enabled goals only
 goal_annotations: list[GoalAnnotation] = [
-    {"name": g.name, "year": g.target_year}
+    {"name": g.name, "age": ret.current_age + (g.target_year - current_year)}
     for g in profile.life_goals
     if g.name in enabled_goals
 ]
 retirement_annotation: RetirementAnnotation | None = None
 if base_proj.iloc[0]["year"] <= retirement_year <= base_proj.iloc[-1]["year"]:
-    retirement_annotation = {"year": retirement_year, "label": f"Retirement (age {plan_retirement_age})"}
+    retirement_annotation = {"age": plan_retirement_age, "label": "Retirement"}
 
 # Pick the selected scenario as the main line
 scenario_map = {"Base": base_proj, "Pessimistic": pessimistic_proj, "Optimistic": optimistic_proj}
@@ -191,9 +191,10 @@ if _mortgage_chart_info["payoff_year"] is not None:
     _first_yr = int(selected_proj.iloc[0]["year"])
     _last_yr = int(selected_proj.iloc[-1]["year"])
     if _first_yr <= _payoff_yr <= _last_yr:
+        _payoff_age = ret.current_age + (_payoff_yr - current_year)
         fig.add_vline(
-            x=_payoff_yr, line_dash="dashdot", line_color="#388E3C", opacity=0.6,
-            annotation_text=f"Mortgage paid off ({_payoff_yr})",
+            x=_payoff_age, line_dash="dashdot", line_color="#388E3C", opacity=0.6,
+            annotation_text=f"Mortgage paid off (age {_payoff_age})",
             annotation_position="bottom right",
             annotation_font_size=10,
         )
@@ -239,7 +240,7 @@ with col_left:
     # Stacked area over time
     asset_cols = [c for c in selected_proj.columns if c.startswith("asset_")]
     if asset_cols:
-        fig = area_chart(selected_proj, x="year", y_cols=asset_cols, title="Assets Over Time")
+        fig = area_chart(selected_proj, x="age", y_cols=asset_cols, title="Assets Over Time")
         st.plotly_chart(fig, use_container_width=True)
 
 with col_right:
@@ -260,8 +261,8 @@ with col_right:
     pension_pot = sum(a.current_value for a in profile.assets if a.category == AssetCategory.PENSION)
 
     # Growth assumptions
-    pre_ret_growth = 0.07
-    in_ret_growth = 0.04
+    pre_ret_growth = GROWTH_RATES.get("Pension", 0.07)
+    in_ret_growth = GROWTH_RATES.get("Property", 0.04)
     sim_inflation = INFLATION_RATE
 
     target_pot = required_pot_size(
@@ -311,14 +312,16 @@ with col_right:
     # ── Mortgage status during retirement ────────────────────────────────
     if _mortgage_info["has_mortgage"]:
         if _mortgage_info["extends_into_retirement"]:
+            _mort_payoff_age = ret.current_age + (_mortgage_info["payoff_year"] - current_year) if _mortgage_info["payoff_year"] else None
             st.warning(
-                f"Mortgage extends **{_mort_yrs_in_ret} year(s)** into retirement "
-                f"(paid off {_mortgage_info['payoff_year']}). "
-                f"This adds {format_gbp(_mort_payment)}/yr to your required withdrawals."
+                f"Mortgage extends **{_mort_yrs_in_ret} year(s)** into retirement"
+                + (f" (paid off at age {_mort_payoff_age})" if _mort_payoff_age else "")
+                + f". This adds {format_gbp(_mort_payment)}/yr to your required withdrawals."
             )
         elif _mortgage_info["payoff_year"] is not None:
+            _mort_payoff_age = ret.current_age + (_mortgage_info["payoff_year"] - current_year)
             st.success(
-                f"Mortgage paid off in {_mortgage_info['payoff_year']} "
+                f"Mortgage paid off at age {_mort_payoff_age} "
                 f"— {format_gbp(_mort_payment)}/yr freed up before retirement."
             )
 
@@ -350,6 +353,7 @@ if "student_loan_debt" in selected_proj.columns and float(selected_proj["student
         start_balance = float(student_loan_series.iloc[0])
         peak_balance = float(student_loan_series.max())
         peak_year = int(selected_proj.loc[student_loan_series.idxmax(), "year"])
+        peak_age = ret.current_age + (peak_year - current_year)
 
         total_repaid = float(selected_proj["student_loan_repayment"].sum())
         total_interest = float(selected_proj["student_loan_interest"].sum())
@@ -368,15 +372,17 @@ if "student_loan_debt" in selected_proj.columns and float(selected_proj["student
 
         if not write_off_or_paid.empty:
             clear_year = int(write_off_or_paid.iloc[0]["year"])
-            clear_text = f"Written off in {clear_year}" if written_off > 0 else f"Paid off by {clear_year}"
+            clear_age = ret.current_age + (clear_year - current_year)
+            clear_text = f"Written off at age {clear_age}" if written_off > 0 else f"Paid off at age {clear_age}"
         elif _expected_write_off is not None:
-            clear_text = f"Not cleared in horizon (write-off expected {_expected_write_off + 1})"
+            _wo_age = ret.current_age + (_expected_write_off + 1 - current_year)
+            clear_text = f"Not cleared in horizon (write-off expected at age {_wo_age})"
         else:
             clear_text = "Not cleared in selected horizon"
 
         sl1, sl2, sl3 = st.columns(3)
         sl1.metric("Starting Balance", f"£{start_balance:,.0f}")
-        sl2.metric("Peak Balance", f"£{peak_balance:,.0f}", delta=f"Peak year: {peak_year}")
+        sl2.metric("Peak Balance", f"£{peak_balance:,.0f}", delta=f"Peak age: {peak_age}")
         sl3.metric("Loan Status", clear_text)
 
         sl4, sl5, sl6 = st.columns(3)
@@ -384,12 +390,13 @@ if "student_loan_debt" in selected_proj.columns and float(selected_proj["student
         sl5.metric("Total Interest", f"£{total_interest:,.0f}")
         sl6.metric("Written Off", f"£{written_off:,.0f}" if written_off > 0 else "£0 — fully repaid")
 
-        fig_sl = line_chart(selected_proj, x="year", y="student_loan_debt", title="Student Loan Balance")
+        fig_sl = line_chart(selected_proj, x="age", y="student_loan_debt", title="Student Loan Balance")
         if _expected_write_off is not None:
             wo_year = _expected_write_off + 1
             if selected_proj.iloc[0]["year"] <= wo_year <= selected_proj.iloc[-1]["year"]:
+                wo_age = ret.current_age + (wo_year - current_year)
                 fig_sl.add_vline(
-                    x=wo_year, line_dash="dash", line_color="red", opacity=0.5,
+                    x=wo_age, line_dash="dash", line_color="red", opacity=0.5,
                     annotation_text="Write-off", annotation_position="top left",
                 )
         st.plotly_chart(fig_sl, use_container_width=True)
@@ -401,7 +408,7 @@ with st.expander("Key Milestones"):
         fig = milestone_timeline(milestones)
         st.plotly_chart(fig, use_container_width=True)
         for m in milestones:
-            st.write(f"**{m['year']}** — {m['event']}")
+            st.write(f"**Age {m['age']}** — {m['event']}")
     else:
         st.caption("No milestones reached in this projection period.")
 
@@ -427,22 +434,24 @@ with st.expander("Retirement Drawdown Simulation"):
         additional_cost_starts_year=max(1, ret.healthcare_start_age - plan_retirement_age + 1),
         mortgage_annual_payment=_mort_payment if _mortgage_info["extends_into_retirement"] else 0.0,
         mortgage_years_remaining=_mort_yrs_in_ret,
+        start_age=plan_retirement_age,
     )
 
     if not sim.empty:
-        fig = line_chart(sim, x="year", y="end_balance", title="Pension Pot Over Retirement", color="#388E3C")
+        fig = line_chart(sim, x="age", y="end_balance", title="Pension Pot Over Retirement", color="#388E3C")
         if gap_info["phase1_years"] > 0:
-            spa_year = gap_info["phase1_years"] + 1
+            spa_age = ret.state_pension_age
             fig.add_vline(
-                x=spa_year, line_dash="dash", line_color="#1565C0", opacity=0.7,
-                annotation_text=f"State Pension (age {ret.state_pension_age})",
+                x=spa_age, line_dash="dash", line_color="#1565C0", opacity=0.7,
+                annotation_text=f"State Pension (age {spa_age})",
                 annotation_position="top left",
             )
         st.plotly_chart(fig, use_container_width=True)
 
         depleted = sim[sim["end_balance"] <= 0]
         if not depleted.empty:
-            st.warning(f"Pension pot depleted in year {int(depleted.iloc[0]['year'])} of retirement.")
+            depleted_age = int(depleted.iloc[0]["age"]) if "age" in depleted.columns else int(depleted.iloc[0]["year"])
+            st.warning(f"Pension pot depleted at age {depleted_age}.")
         else:
             st.success(
                 f"Pension pot lasts the full {years_in_ret} years with "

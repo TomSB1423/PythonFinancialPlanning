@@ -5,38 +5,31 @@ from __future__ import annotations
 from datetime import date
 from typing import TypedDict
 
-import numpy_financial as npf
 import pandas as pd
 
-from models.assumptions import GROWTH_RATES, SCENARIOS
+from calculations.cashflow import annual_cash_flow
+from calculations.instruments import (
+    AssetState,
+    MortgageGoalState,
+    StandardDebtState,
+    _mortgage_monthly_payment,
+    create_debt_state,
+    create_goal_state,
+)
+from models.assumptions import SALARY_GROWTH_RATE, SCENARIOS
 from models.financial_data import DebtCategory, GoalFunding, UserProfile
-
-
-class MortgageState(TypedDict):
-    balance: float
-    rate: float
-    annual_payment: float
-    remaining_years: int
 
 
 class Milestone(TypedDict):
     event: str
     year: int
+    age: int
 
 
 class DecisionImpact(TypedDict):
     goal_name: str
     net_worth_delta_at_retirement: float
     net_worth_delta_at_end: float
-
-
-def _mortgage_monthly_payment(principal: float, annual_rate: float, term_years: int) -> float:
-    """Calculate monthly mortgage repayment using numpy-financial."""
-    if principal <= 0 or term_years <= 0:
-        return 0.0
-    if annual_rate <= 0:
-        return principal / (term_years * 12)
-    return float(-npf.pmt(annual_rate / 12, term_years * 12, principal))
 
 
 def project_net_worth(
@@ -51,74 +44,84 @@ def project_net_worth(
     retirement_year = current_year + max(0, profile.retirement.target_retirement_age - profile.retirement.current_age)
     rows: list[dict[str, int | float]] = []
 
-    # Snapshot asset values (mutable copies)
-    asset_values = {i: a.current_value for i, a in enumerate(profile.assets)}
-    asset_contribs = {i: a.annual_contribution for i, a in enumerate(profile.assets)}
-    asset_growth = {
-        i: GROWTH_RATES.get(a.category.value, 0.04) * multiplier
-        for i, a in enumerate(profile.assets)
-    }
-    asset_cats = {i: a.category.value for i, a in enumerate(profile.assets)}
-    asset_liquid = {i: a.is_liquid for i, a in enumerate(profile.assets)}
+    # ── Initialise state objects from profile ──────────────────────────
+    assets: list[AssetState] = [
+        AssetState.from_model(a, scenario_multiplier=multiplier)
+        for a in profile.assets
+    ]
+    debts = [create_debt_state(d) for d in profile.debts]
+    goals = [create_goal_state(g) for g in profile.life_goals]
 
-    # Snapshot debt balances
-    debt_balances = {i: d.outstanding_balance for i, d in enumerate(profile.debts)}
-    debt_rates = {i: d.interest_rate for i, d in enumerate(profile.debts)}
-    debt_payments = {i: d.monthly_payment * 12 for i, d in enumerate(profile.debts)}
-    debt_cats = {i: d.category for i, d in enumerate(profile.debts)}
-
-    # Track dynamically added mortgages: {goal_name: {balance, rate, annual_payment, remaining_years}}
-    dynamic_mortgages: dict[str, MortgageState] = {}
-
-    # Life goals indexed by year — separate mortgage vs savings goals
-    goal_spending: dict[int, float] = {}   # cash to deduct from liquid assets
+    # Pre-compute goal lump / ongoing spending by year
+    goal_spending: dict[int, float] = {}
     goal_ongoing: dict[int, float] = {}
+    for g in goals:
+        goal_spending[g.target_year] = goal_spending.get(g.target_year, 0) + g.lump_sum_cost()
+        for y in range(years + 1):
+            yr = current_year + y
+            oc = g.ongoing_cost(yr)
+            if oc > 0:
+                goal_ongoing[yr] = goal_ongoing.get(yr, 0) + oc
 
-    for g in profile.life_goals:
-        if g.funding_source in (GoalFunding.MORTGAGE, GoalFunding.MIXED):
-            # Only the deposit comes from savings
-            deposit = g.target_cost * g.deposit_percentage
-            goal_spending[g.target_year] = goal_spending.get(g.target_year, 0) + deposit
-        else:
-            goal_spending[g.target_year] = goal_spending.get(g.target_year, 0) + g.target_cost
-
-        for y in range(g.target_year, g.target_year + g.ongoing_years):
-            goal_ongoing[y] = goal_ongoing.get(y, 0) + g.annual_ongoing_cost
-
-    # Annual savings from salary (distributed across liquid assets)
-    annual_salary_savings = profile.annual_salary * 0 if profile.annual_salary <= 0 else (
-        # Use the explicit monthly_savings from the profile if we can find it,
-        # otherwise distribute proportionally. We read it from the model.
-        getattr(profile, "monthly_savings", 0) * 12
-    )
+    # Dynamic debts spawned by goal activation
+    dynamic_debts: list[StandardDebtState] = []
 
     for yr_offset in range(years + 1):
         year = current_year + yr_offset
         is_retired = year >= retirement_year
+        salary = profile.annual_salary * (1 + SALARY_GROWTH_RATE) ** yr_offset
 
-        # Sum current values
-        total_assets = sum(asset_values.values())
-        mortgage_debt = sum(m["balance"] for m in dynamic_mortgages.values())
-        total_debts = sum(debt_balances.values()) + mortgage_debt
+        # ── Compute active debt payments (excl. credit cards) ──────────
+        mortgage_payments = sum(
+            d.annual_payment for d in debts
+            if not d.is_cleared and d.category == DebtCategory.MORTGAGE.value
+        ) + sum(
+            d.annual_payment for d in dynamic_debts
+            if not d.is_cleared
+        )
+        loan_payments = sum(
+            d.annual_payment for d in debts
+            if not d.is_cleared
+            and d.category not in (DebtCategory.MORTGAGE.value, DebtCategory.STUDENT_LOAN.value, DebtCategory.CREDIT_CARD.value)
+        )
+
+        ongoing = goal_ongoing.get(year, 0)
+
+        # ── Cash flow waterfall ────────────────────────────────────────
+        cf = annual_cash_flow(
+            profile,
+            yr_offset=yr_offset,
+            is_retired=is_retired,
+            active_mortgage_payments=mortgage_payments,
+            active_loan_payments=loan_payments,
+            active_goal_ongoing=ongoing,
+        )
+
+        # ── Snapshot totals ────────────────────────────────────────────
+        total_assets = sum(a.value for a in assets)
+        total_debts = sum(d.balance for d in debts) + sum(d.balance for d in dynamic_debts)
         nw = total_assets - total_debts
 
-        # Per-category breakdown
         by_cat: dict[str, float] = {}
-        for i, val in asset_values.items():
-            cat = asset_cats[i]
-            by_cat[cat] = by_cat.get(cat, 0) + val
+        for a in assets:
+            by_cat[a.category] = by_cat.get(a.category, 0) + a.value
 
-        # Goal spending this year
         lump = goal_spending.get(year, 0)
-        ongoing = goal_ongoing.get(year, 0)
         total_goal_cost = lump + ongoing
+
+        age = profile.retirement.current_age + yr_offset
 
         row: dict[str, int | float] = {
             "year": year,
+            "age": age,
             "total_assets": round(total_assets, 2),
             "total_debts": round(total_debts, 2),
             "net_worth": round(nw, 2),
             "goal_spending": round(total_goal_cost, 2),
+            "gross_salary": cf.gross_salary,
+            "net_take_home": cf.net_take_home,
+            "total_expenses": cf.total_outflows,
+            "surplus": cf.surplus,
         }
         for cat, value in by_cat.items():
             row[f"asset_{cat}"] = round(value, 2)
@@ -127,91 +130,42 @@ def project_net_worth(
         if yr_offset == years:
             break
 
-        # ── Grow assets for next year ──────────────────────────────────
-        for i in asset_values:
-            asset_values[i] *= (1 + asset_growth[i])
-            # Add contributions only while working
-            if not is_retired:
-                asset_values[i] += asset_contribs.get(i, 0)
+        # ── Grow assets ────────────────────────────────────────────────
+        for a in assets:
+            a.grow()
+            a.contribute(is_retired)
 
-        # Distribute salary savings across liquid assets (while working)
-        # Deduct active mortgage payments from the savings pool first
-        if not is_retired and annual_salary_savings > 0:
-            original_mortgage_payments = sum(
-                debt_payments[i] for i in debt_balances
-                if debt_balances[i] > 0 and debt_cats.get(i) == DebtCategory.MORTGAGE
-            )
-            dynamic_mortgage_payments = sum(
-                m["annual_payment"] for m in dynamic_mortgages.values() if m["balance"] > 0
-            )
-            effective_savings = max(0, annual_salary_savings - original_mortgage_payments - dynamic_mortgage_payments)
-            liquid_ids = [i for i in asset_values if asset_liquid.get(i, False) and asset_values[i] > 0]
-            if liquid_ids and effective_savings > 0:
-                per_asset = effective_savings / len(liquid_ids)
-                for i in liquid_ids:
-                    asset_values[i] += per_asset
+        # ── Distribute surplus to liquid assets ────────────────────────
+        if not is_retired and cf.surplus > 0:
+            liquid_assets = [a for a in assets if a.is_liquid and a.value > 0]
+            if liquid_assets:
+                per_asset = cf.surplus / len(liquid_assets)
+                for a in liquid_assets:
+                    a.deposit(per_asset)
 
-        # ── Pay down original debts ────────────────────────────────────
-        for i in list(debt_balances.keys()):
-            if debt_balances[i] <= 0:
-                continue
-            payment = min(debt_payments[i], debt_balances[i] + debt_balances[i] * debt_rates[i])
-            # Approximate mid-year interest: interest accrues on the average balance
-            principal_portion = payment - debt_balances[i] * debt_rates[i]
-            avg_balance = debt_balances[i] - max(0, principal_portion) / 2
-            interest = avg_balance * debt_rates[i]
-            debt_balances[i] = max(0, debt_balances[i] + interest - payment)
+        # ── Pay down debts ─────────────────────────────────────────────
+        for d in debts:
+            d.accrue_and_pay(salary, is_retired, year)
+        for d in dynamic_debts:
+            d.accrue_and_pay(salary, is_retired, year)
 
-        # ── Pay down dynamic mortgages ─────────────────────────────────
-        for name in list(dynamic_mortgages.keys()):
-            m = dynamic_mortgages[name]
-            if m["balance"] <= 0:
-                del dynamic_mortgages[name]
-                continue
-            payment = min(m["annual_payment"], m["balance"] + m["balance"] * m["rate"])
-            principal_portion = payment - m["balance"] * m["rate"]
-            avg_balance = m["balance"] - max(0, principal_portion) / 2
-            interest = avg_balance * m["rate"]
-            m["balance"] = max(0, m["balance"] + interest - m["annual_payment"])
-            m["remaining_years"] -= 1
-            if m["remaining_years"] <= 0 or m["balance"] <= 0:
-                m["balance"] = 0
+        # ── Activate goals ─────────────────────────────────────────────
+        for g in goals:
+            if g.target_year == year:
+                new_assets, new_debts = g.activate(multiplier)
+                assets.extend(new_assets)
+                dynamic_debts.extend(new_debts)
 
-        # ── Handle goal spending ───────────────────────────────────────
-        # Create mortgage debts for mortgage-funded goals in their target year
-        for g in profile.life_goals:
-            if g.target_year == year and g.funding_source in (GoalFunding.MORTGAGE, GoalFunding.MIXED):
-                mortgage_principal = g.target_cost * (1 - g.deposit_percentage)
-                monthly_pmt = _mortgage_monthly_payment(mortgage_principal, g.mortgage_rate, g.mortgage_term_years)
-                dynamic_mortgages[g.name] = {
-                    "balance": mortgage_principal,
-                    "rate": g.mortgage_rate,
-                    "annual_payment": monthly_pmt * 12,
-                    "remaining_years": g.mortgage_term_years,
-                }
-                # Add the property as an asset
-                next_asset_id = max(asset_values.keys(), default=-1) + 1
-                asset_values[next_asset_id] = g.target_cost
-                asset_growth[next_asset_id] = GROWTH_RATES.get("Property", 0.04) * multiplier
-                asset_cats[next_asset_id] = "Property"
-                asset_contribs[next_asset_id] = 0
-                asset_liquid[next_asset_id] = False
-
-        # Deduct cash goal spending from liquid assets (proportionally)
+        # ── Deduct goal spending from liquid assets ────────────────────
         if total_goal_cost > 0:
-            liquid_ids = [
-                i for i in asset_values
-                if asset_liquid.get(i, False) and asset_values.get(i, 0) > 0
-            ]
-            liquid_total = sum(asset_values[i] for i in liquid_ids)
+            liquid_assets = [a for a in assets if a.is_liquid and a.value > 0]
+            liquid_total = sum(a.value for a in liquid_assets)
             if liquid_total > 0:
-                for i in liquid_ids:
-                    share = asset_values[i] / liquid_total
-                    deduction = min(asset_values[i], total_goal_cost * share)
-                    asset_values[i] -= deduction
+                for a in liquid_assets:
+                    share = a.value / liquid_total
+                    a.withdraw(total_goal_cost * share)
 
     df = pd.DataFrame(rows)
-    # Fill NaN category columns with 0
     return df.fillna(0)
 
 
@@ -219,22 +173,32 @@ def find_milestones(projection: pd.DataFrame, profile: UserProfile) -> list[Mile
     """Identify key milestones from a projection DataFrame."""
     milestones: list[Milestone] = []
 
+    current_year = date.today().year
+    current_age = profile.retirement.current_age
+
+    def _age_for_year(yr: int) -> int:
+        return current_age + (yr - current_year)
+
     # When net worth hits certain thresholds
     for target in [100_000, 250_000, 500_000, 1_000_000]:
         hits = projection[projection["net_worth"] >= target]
         if not hits.empty:
+            yr = int(hits.iloc[0]["year"])
             milestones.append({
                 "event": f"Net worth reaches £{target:,.0f}",
-                "year": int(hits.iloc[0]["year"]),
+                "year": yr,
+                "age": _age_for_year(yr),
             })
 
     # When debts hit zero
     if profile.debts:
         debt_free = projection[projection["total_debts"] <= 0]
         if not debt_free.empty:
+            yr = int(debt_free.iloc[0]["year"])
             milestones.append({
                 "event": "Debt free",
-                "year": int(debt_free.iloc[0]["year"]),
+                "year": yr,
+                "age": _age_for_year(yr),
             })
 
     # Mortgage payoff year (first year with zero mortgage debt)
@@ -243,6 +207,7 @@ def find_milestones(projection: pd.DataFrame, profile: UserProfile) -> list[Mile
         milestones.append({
             "event": "Mortgage paid off",
             "year": mortgage_payoff,
+            "age": _age_for_year(mortgage_payoff),
         })
 
     # Life goal years
@@ -250,6 +215,7 @@ def find_milestones(projection: pd.DataFrame, profile: UserProfile) -> list[Mile
         milestones.append({
             "event": f"Goal: {g.name}",
             "year": g.target_year,
+            "age": _age_for_year(g.target_year),
         })
 
     milestones.sort(key=lambda m: m["year"])
@@ -287,70 +253,37 @@ def _track_mortgage_payoff(profile: UserProfile, years: int) -> int | None:
     """Simulate mortgage-only paydown to find the payoff year."""
     current_year = date.today().year
 
-    # Original mortgage debts
-    mortgage_balances: dict[str, float] = {}
-    mortgage_rates: dict[str, float] = {}
-    mortgage_payments: dict[str, float] = {}
+    # Original mortgage debts as state objects
+    mortgages: list[StandardDebtState] = [
+        StandardDebtState.from_model(d)
+        for d in profile.debts
+        if d.category == DebtCategory.MORTGAGE and d.outstanding_balance > 0
+    ]
+    had_mortgages = bool(mortgages)
 
-    for d in profile.debts:
-        if d.category == DebtCategory.MORTGAGE and d.outstanding_balance > 0:
-            mortgage_balances[d.name] = d.outstanding_balance
-            mortgage_rates[d.name] = d.interest_rate
-            mortgage_payments[d.name] = d.monthly_payment * 12
-
-    # Dynamic mortgages from life goals
-    dynamic: dict[str, MortgageState] = {}
-    had_mortgages = bool(mortgage_balances)
+    # Goals that will spawn mortgages
+    mortgage_goals = [
+        MortgageGoalState(g)
+        for g in profile.life_goals
+        if g.funding_source in (GoalFunding.MORTGAGE, GoalFunding.MIXED)
+    ]
 
     for yr_offset in range(years + 1):
         year = current_year + yr_offset
 
-        # Check if a mortgage-funded goal triggers this year
-        for g in profile.life_goals:
-            if g.target_year == year and g.funding_source in (GoalFunding.MORTGAGE, GoalFunding.MIXED):
-                principal = g.target_cost * (1 - g.deposit_percentage)
-                monthly_pmt = _mortgage_monthly_payment(principal, g.mortgage_rate, g.mortgage_term_years)
-                dynamic[g.name] = {
-                    "balance": principal,
-                    "rate": g.mortgage_rate,
-                    "annual_payment": monthly_pmt * 12,
-                    "remaining_years": g.mortgage_term_years,
-                }
+        # Activate mortgage-funded goals in their target year
+        for g in mortgage_goals:
+            if g.target_year == year:
+                _, new_debts = g.activate(1.0)
+                mortgages.extend(new_debts)
                 had_mortgages = True
 
-        # Total mortgage balance this year
-        total = sum(mortgage_balances.values()) + sum(m["balance"] for m in dynamic.values())
+        total = sum(m.balance for m in mortgages)
         if total <= 0 and yr_offset > 0 and had_mortgages:
             return year
 
-        # Pay down original mortgages
-        for name in list(mortgage_balances.keys()):
-            bal = mortgage_balances[name]
-            if bal <= 0:
-                del mortgage_balances[name]
-                continue
-            pmt = min(mortgage_payments[name], bal + bal * mortgage_rates[name])
-            principal_portion = pmt - bal * mortgage_rates[name]
-            avg_bal = bal - max(0, principal_portion) / 2
-            interest = avg_bal * mortgage_rates[name]
-            mortgage_balances[name] = max(0, bal + interest - pmt)
-            if mortgage_balances[name] <= 0:
-                del mortgage_balances[name]
-
-        # Pay down dynamic mortgages
-        for name in list(dynamic.keys()):
-            m = dynamic[name]
-            if m["balance"] <= 0:
-                del dynamic[name]
-                continue
-            pmt = min(m["annual_payment"], m["balance"] + m["balance"] * m["rate"])
-            principal_portion = pmt - m["balance"] * m["rate"]
-            avg_bal = m["balance"] - max(0, principal_portion) / 2
-            interest = avg_bal * m["rate"]
-            m["balance"] = max(0, m["balance"] + interest - m["annual_payment"])
-            m["remaining_years"] -= 1
-            if m["remaining_years"] <= 0 or m["balance"] <= 0:
-                del dynamic[name]
+        for m in mortgages:
+            m.accrue_and_pay(0.0, False, year)
 
     return None
 
@@ -469,3 +402,46 @@ def compute_decision_impacts(
             "net_worth_delta_at_end": delta_end,
         })
     return results
+
+
+# ── Per-debt payoff projection ─────────────────────────────────────────────
+
+
+def debt_payoff_projection(
+    profile: UserProfile,
+    years: int = 30,
+) -> pd.DataFrame:
+    """Year-by-year balance for each debt.
+
+    Returns a DataFrame with columns: year, age, and one
+    ``{debt_name}_balance`` column per debt.
+    """
+    current_year = date.today().year
+    debt_states = [create_debt_state(d) for d in profile.debts]
+
+    if not debt_states:
+        return pd.DataFrame(columns=["year", "age"])
+
+    rows: list[dict[str, int | float]] = []
+
+    for yr_offset in range(years + 1):
+        year = current_year + yr_offset
+        age = profile.retirement.current_age + yr_offset
+        retirement_year = current_year + max(
+            0, profile.retirement.target_retirement_age - profile.retirement.current_age,
+        )
+        is_retired = year >= retirement_year
+
+        row: dict[str, int | float] = {"year": year, "age": age}
+        for ds in debt_states:
+            row[f"{ds.name}_balance"] = round(ds.balance, 2)
+        rows.append(row)
+
+        if yr_offset == years:
+            break
+
+        salary = profile.annual_salary * (1 + SALARY_GROWTH_RATE) ** yr_offset
+        for ds in debt_states:
+            ds.accrue_and_pay(salary, is_retired, year)
+
+    return pd.DataFrame(rows)

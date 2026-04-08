@@ -249,7 +249,7 @@ def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Deb
             student_plan = StudentLoanPlan(
                 st.selectbox(
                     "Student Loan Plan",
-                    options=[StudentLoanPlan.PLAN_2.value],
+                    options=[p.value for p in StudentLoanPlan],
                     index=0,
                     key=f"{key_prefix}_sl_plan",
                 )
@@ -257,7 +257,7 @@ def debt_form(key_prefix: str = "new_debt", defaults: Debt | None = None) -> Deb
             student_threshold = st.number_input(
                 "Repayment Threshold (£ / year)",
                 min_value=0.0,
-                value=float(d.student_loan_repayment_threshold or 27_295.0),
+                value=float(d.student_loan_repayment_threshold or 29_385.0),
                 step=100.0,
                 key=f"{key_prefix}_sl_threshold",
             )

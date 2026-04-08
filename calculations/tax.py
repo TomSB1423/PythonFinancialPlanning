@@ -65,13 +65,19 @@ def income_tax(gross_income: float) -> IncomeTaxResult:
     breakdown: list[TaxBreakdown] = []
     remaining = taxable
 
-    # Skip the PA band, start taxing from basic rate upward
-    prev_upper = 0.0
-    for upper, rate, name in TAX_BANDS:
-        if rate == 0:
-            prev_upper = upper
-            continue
-        band_width = upper - prev_upper
+    # Build bands relative to taxable income.  The basic-rate band WIDTH
+    # is always £37,700 (= 50,270 − 12,570) regardless of PA taper.
+    # When PA is tapered the higher-rate band expands downward (effective
+    # 60% marginal rate between £100k and £125,140).
+    basic_band_width = TAX_BANDS[1][0] - TAX_BANDS[0][0]  # 50_270 - 12_570
+    higher_band_upper = TAX_BANDS[2][0]  # 125_140
+    taxable_bands: list[tuple[float, float, str]] = [
+        (basic_band_width, TAX_BANDS[1][1], TAX_BANDS[1][2]),
+        (higher_band_upper - pa - basic_band_width, TAX_BANDS[2][1], TAX_BANDS[2][2]),
+        (float("inf"), TAX_BANDS[3][1], TAX_BANDS[3][2]),
+    ]
+
+    for band_width, rate, name in taxable_bands:
         taxable_in_band = min(remaining, band_width)
         if taxable_in_band <= 0:
             break
@@ -79,7 +85,6 @@ def income_tax(gross_income: float) -> IncomeTaxResult:
         total_tax += tax_in_band
         breakdown.append({"band": name, "taxable": taxable_in_band, "rate": rate, "tax": tax_in_band})
         remaining -= taxable_in_band
-        prev_upper = upper
 
     return {
         "tax": round(total_tax, 2),
@@ -161,14 +166,21 @@ def pension_drawdown_tax(
     withdrawal: float,
     other_income: float = 0.0,
     lump_sum_taken: bool = False,
+    tax_free_amount: float | None = None,
 ) -> PensionDrawdownTaxResult:
     """Tax on pension drawdown.
 
-    If *lump_sum_taken* is False (first withdrawal / PCLS year), 25% is
-    tax-free.  Once the lump sum has been taken, the entire withdrawal
-    is taxable as income.
+    When *tax_free_amount* is provided it overrides the boolean
+    *lump_sum_taken* flag — up to that amount of the withdrawal is
+    treated as tax-free (PCLS model with cumulative tracking).
+
+    Legacy behaviour: if *lump_sum_taken* is False and
+    *tax_free_amount* is None, 25% of this withdrawal is tax-free.
     """
-    tax_free = 0.0 if lump_sum_taken else withdrawal * PENSION_TAX_FREE_LUMP_SUM_RATE
+    if tax_free_amount is not None:
+        tax_free = min(tax_free_amount, withdrawal)
+    else:
+        tax_free = 0.0 if lump_sum_taken else withdrawal * PENSION_TAX_FREE_LUMP_SUM_RATE
     taxable_withdrawal = withdrawal - tax_free
     total_income = other_income + taxable_withdrawal
     # Tax on total income minus tax on other income alone

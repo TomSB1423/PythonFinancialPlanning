@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import date
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from models.assumptions import (
     DEFAULT_ANNUAL_HOLIDAY_BUDGET,
     DEFAULT_ANNUAL_LIVING_EXPENSES,
     DEFAULT_ANNUAL_SALARY,
-    DEFAULT_MONTHLY_SAVINGS,
+    STUDENT_LOAN_THRESHOLDS,
 )
 
 # ── Enums ──────────────────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ class DebtCategory(str, Enum):
 
 class StudentLoanPlan(str, Enum):
     PLAN_2 = "Plan 2"
+    PLAN_5 = "Plan 5"
 
 
 class TaxWrapper(str, Enum):
@@ -83,7 +84,8 @@ class Debt(BaseModel):
             if self.student_loan_plan is None:
                 self.student_loan_plan = StudentLoanPlan.PLAN_2
             if self.student_loan_repayment_threshold is None:
-                self.student_loan_repayment_threshold = 27_295
+                plan_key = self.student_loan_plan.value if self.student_loan_plan else "Plan 2"
+                self.student_loan_repayment_threshold = STUDENT_LOAN_THRESHOLDS.get(plan_key, 29_385)
             if self.student_loan_repayment_rate is None:
                 self.student_loan_repayment_rate = 0.09
             if self.student_loan_write_off_years is None:
@@ -110,16 +112,10 @@ class LifeGoal(BaseModel):
     ongoing_years: int = Field(default=0, ge=0, description="How many years the ongoing cost lasts")
     notes: str = ""
     deposit_percentage: float = Field(default=0.10, ge=0, le=1, description="Deposit as fraction of target_cost for mortgage-funded goals")
-    mortgage_rate: float = Field(default=0.045, ge=0, description="Annual mortgage interest rate")
+    mortgage_rate: float = Field(default=0.055, ge=0, description="Annual mortgage interest rate")
     mortgage_term_years: int = Field(default=25, ge=1, le=40, description="Mortgage repayment term in years")
     loan_interest_rate: float = Field(default=0.05, ge=0, description="Annual loan interest rate")
     loan_term_years: int = Field(default=5, ge=1, le=20, description="Loan repayment term in years")
-
-
-class DefinedBenefitPension(BaseModel):
-    name: str
-    annual_income: float = Field(ge=0, description="Expected annual income from this DB pension")
-    start_age: int = Field(ge=50, le=75, description="Age when this pension starts paying")
 
 
 class RetirementProfile(BaseModel):
@@ -127,35 +123,10 @@ class RetirementProfile(BaseModel):
     target_retirement_age: int = Field(default=65, ge=30, le=100)
     desired_annual_income: float = Field(default=30000.0, ge=0)
     state_pension_age: int = Field(default=67, ge=60, le=75)
-    expected_state_pension: float = Field(default=11502.0, ge=0)
-    defined_benefit_pensions: list[DefinedBenefitPension] = Field(default_factory=list)
+    expected_state_pension: float = Field(default=11973.0, ge=0)
     life_expectancy: int = Field(default=90, ge=60, le=120)
     estimated_healthcare_costs: float = Field(default=0.0, ge=0, description="Annual later-life care costs")
     healthcare_start_age: int = Field(default=80, ge=60, le=100)
-
-
-class InsuranceType(str, Enum):
-    LIFE = "Life"
-    CRITICAL_ILLNESS = "Critical Illness"
-    INCOME_PROTECTION = "Income Protection"
-    BUILDINGS = "Buildings"
-    CONTENTS = "Contents"
-    PRIVATE_MEDICAL = "Private Medical"
-    OTHER = "Other"
-
-
-class InsurancePolicy(BaseModel):
-    name: str
-    insurance_type: InsuranceType = InsuranceType.OTHER
-    cover_amount: float = Field(ge=0, description="Total cover amount (£)")
-    monthly_premium: float = Field(ge=0, description="Monthly premium (£)")
-    expiry_year: int | None = Field(default=None, ge=2000, le=2100, description="Year cover expires")
-    notes: str = ""
-
-
-class EmergencyFund(BaseModel):
-    current_balance: float = Field(default=0.0, ge=0, description="Current emergency fund balance (£)")
-    target_months: int = Field(default=6, ge=1, le=24, description="Target months of expenses covered")
 
 
 class UserProfile(BaseModel):
@@ -166,10 +137,9 @@ class UserProfile(BaseModel):
     life_goals: list[LifeGoal] = Field(default_factory=list)
     retirement: RetirementProfile = Field(default_factory=RetirementProfile)
     annual_salary: float = Field(default=DEFAULT_ANNUAL_SALARY, ge=0)
-    monthly_savings: float = Field(default=DEFAULT_MONTHLY_SAVINGS, ge=0)
     annual_living_expenses: float = Field(default=DEFAULT_ANNUAL_LIVING_EXPENSES, ge=0)
     annual_holiday_budget: float = Field(default=DEFAULT_ANNUAL_HOLIDAY_BUDGET, ge=0)
     annual_retirement_living_expenses: float | None = Field(default=None, ge=0)
     annual_retirement_holiday_budget: float | None = Field(default=None, ge=0)
-    insurance_policies: list[InsurancePolicy] = Field(default_factory=list)
-    emergency_fund: EmergencyFund = Field(default_factory=EmergencyFund)
+
+    model_config = ConfigDict(extra="ignore")

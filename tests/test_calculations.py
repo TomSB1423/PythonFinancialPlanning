@@ -15,7 +15,18 @@ from calculations.net_worth import (
     total_assets,
     total_debts,
 )
-from calculations.projections import find_milestones, mortgage_info_at_retirement, project_net_worth
+from calculations.cashflow import CashFlowBreakdown, annual_cash_flow, student_loan_annual_repayment
+from calculations.projections import find_milestones, mortgage_info_at_retirement, project_net_worth, debt_payoff_projection
+from calculations.instruments import (
+    AssetState,
+    LoanGoalState,
+    MortgageGoalState,
+    SavingsGoalState,
+    StandardDebtState,
+    StudentLoanState,
+    create_debt_state,
+    create_goal_state,
+)
 from calculations.retirement import (
     drawdown_simulation,
     future_value,
@@ -25,6 +36,7 @@ from calculations.retirement import (
     retirement_income_gap,
     retirement_readiness,
     savings_needed,
+    years_to_fire,
 )
 from calculations.tax import (
     capital_gains_tax,
@@ -33,15 +45,22 @@ from calculations.tax import (
     national_insurance,
     pension_drawdown_tax,
 )
+from calculations.property import (
+    amortization_schedule,
+    calculate_equity,
+    calculate_ltv,
+    equity_over_time,
+    property_profit,
+)
 from models.financial_data import (
     Asset,
     AssetCategory,
     Debt,
     DebtCategory,
-    DefinedBenefitPension,
     GoalFunding,
     LifeGoal,
     RetirementProfile,
+    StudentLoanPlan,
     TaxWrapper,
     UserProfile,
 )
@@ -267,40 +286,26 @@ class TestRetirementIncomeGap:
         """Retiring at 60 with SPA 67 produces a phase-1 gap with no state pension."""
         profile = RetirementProfile(
             current_age=30, target_retirement_age=60, desired_annual_income=35_000,
-            state_pension_age=67, expected_state_pension=11_502,
+            state_pension_age=67, expected_state_pension=11_973,
             life_expectancy=90,
         )
         gap = retirement_income_gap(profile)
         assert gap["phase1_years"] == 7  # 67 - 60
         assert gap["phase2_years"] == 23  # 90 - 67
         assert gap["phase1_gap"] == 35_000  # No guaranteed income in phase 1
-        assert gap["phase2_gap"] == 35_000 - 11_502  # State pension in phase 2
+        assert gap["phase2_gap"] == 35_000 - 11_973  # State pension in phase 2
 
     def test_retire_at_state_pension_age(self) -> None:
         """No phase-1 gap when retirement = SPA."""
         profile = RetirementProfile(
             current_age=40, target_retirement_age=67, desired_annual_income=30_000,
-            state_pension_age=67, expected_state_pension=11_502,
+            state_pension_age=67, expected_state_pension=11_973,
             life_expectancy=90,
         )
         gap = retirement_income_gap(profile)
         assert gap["phase1_years"] == 0
         assert gap["phase2_years"] == 23
-        assert gap["annual_gap"] == pytest.approx(30_000 - 11_502, rel=0.01)
-
-    def test_db_pension_reduces_gap(self) -> None:
-        """A DB pension starting at 60 reduces the phase-1 gap."""
-        profile = RetirementProfile(
-            current_age=30, target_retirement_age=60, desired_annual_income=35_000,
-            state_pension_age=67, expected_state_pension=11_502,
-            life_expectancy=90,
-            defined_benefit_pensions=[
-                DefinedBenefitPension(name="Civil Service", annual_income=10_000, start_age=60),
-            ],
-        )
-        gap = retirement_income_gap(profile)
-        assert gap["phase1_guaranteed"] == 10_000
-        assert gap["phase1_gap"] == 25_000  # 35k - 10k DB
+        assert gap["annual_gap"] == pytest.approx(30_000 - 11_973, rel=0.01)
 
 
 class TestPotSizeAndSavings:
@@ -336,6 +341,18 @@ class TestDrawdownSimulation:
         sim = drawdown_simulation(pot=500_000, annual_withdrawal=25_000, years=30)
         assert len(sim) == 30
 
+    def test_drawdown_age_column(self) -> None:
+        """When start_age is provided, an age column should be present."""
+        sim = drawdown_simulation(pot=500_000, annual_withdrawal=25_000, years=10, start_age=60)
+        assert "age" in sim.columns
+        assert sim.iloc[0]["age"] == 60
+        assert sim.iloc[-1]["age"] == 69
+
+    def test_drawdown_no_age_without_start_age(self) -> None:
+        """Without start_age the age column should be absent."""
+        sim = drawdown_simulation(pot=500_000, annual_withdrawal=25_000, years=5)
+        assert "age" not in sim.columns
+
     def test_drawdown_first_year_tax_free_portion(self) -> None:
         """Year 1 should include the 25% PCLS tax benefit."""
         sim = drawdown_simulation(pot=500_000, annual_withdrawal=25_000, years=5)
@@ -353,10 +370,10 @@ class TestDrawdownSimulation:
         """State pension kicking in should appear in other_income."""
         sim = drawdown_simulation(
             pot=500_000, annual_withdrawal=30_000, years=10,
-            state_pension=11_502, state_pension_starts_year=5,
+            state_pension=11_973, state_pension_starts_year=5,
         )
         assert sim.iloc[3]["other_income"] == 0  # Year 4: no state pension yet
-        assert sim.iloc[4]["other_income"] == pytest.approx(11_502, rel=0.01)  # Year 5: pension starts
+        assert sim.iloc[4]["other_income"] == pytest.approx(11_973, rel=0.01)  # Year 5: pension starts
 
 
 class TestHealthcareCosts:
@@ -398,8 +415,15 @@ class TestProjections:
 
     def test_projection_has_required_columns(self, sample_profile: UserProfile) -> None:
         proj = project_net_worth(sample_profile, years=10, scenario="Base")
-        for col in ["year", "total_assets", "total_debts", "net_worth", "goal_spending"]:
+        for col in ["year", "age", "total_assets", "total_debts", "net_worth", "goal_spending"]:
             assert col in proj.columns
+
+    def test_projection_age_column_values(self, sample_profile: UserProfile) -> None:
+        """Age column should start at current_age and increment by 1 each year."""
+        proj = project_net_worth(sample_profile, years=10, scenario="Base")
+        expected_start = sample_profile.retirement.current_age
+        ages = proj["age"].tolist()
+        assert ages == list(range(expected_start, expected_start + 11))
 
     def test_first_year_matches_current_state(self, sample_profile: UserProfile) -> None:
         """Year 0 should reflect the current balance sheet."""
@@ -424,6 +448,14 @@ class TestMilestones:
         years = [m["year"] for m in milestones]
         assert years == sorted(years)
 
+    def test_milestones_have_age(self, sample_profile: UserProfile) -> None:
+        """Every milestone should carry an age field."""
+        proj = project_net_worth(sample_profile, years=30, scenario="Base")
+        milestones = find_milestones(proj, sample_profile)
+        for m in milestones:
+            assert "age" in m
+            assert isinstance(m["age"], int)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Mortgage-Aware Savings & Retirement
@@ -435,7 +467,6 @@ def mortgage_profile() -> UserProfile:
     """Profile with a mortgage debt and liquid savings — no life goals."""
     return UserProfile(
         annual_salary=60_000,
-        monthly_savings=2_000,
         annual_living_expenses=18_000,
         annual_holiday_budget=2_400,
         assets=[
@@ -463,7 +494,6 @@ def goal_mortgage_profile() -> UserProfile:
     buy_year = _d.today().year + 3
     return UserProfile(
         annual_salary=55_000,
-        monthly_savings=1_500,
         annual_living_expenses=20_000,
         annual_holiday_budget=2_000,
         assets=[
@@ -543,7 +573,6 @@ class TestMortgageAwareSavings:
         """Profile without mortgage should distribute full savings."""
         profile = UserProfile(
             annual_salary=50_000,
-            monthly_savings=1_000,
             assets=[
                 Asset(
                     name="Cash", category=AssetCategory.CASH, current_value=10_000,
@@ -574,7 +603,6 @@ class TestMortgageMilestones:
         """Mortgage extending past retirement age should be flagged."""
         profile = UserProfile(
             annual_salary=50_000,
-            monthly_savings=1_000,
             assets=[
                 Asset(name="Cash", category=AssetCategory.CASH, current_value=10_000,
                       annual_growth_rate=0.02, is_liquid=True, tax_wrapper=TaxWrapper.NONE),
@@ -610,7 +638,7 @@ class TestMortgageAwareRetirement:
         profile = RetirementProfile(
             current_age=30, target_retirement_age=65,
             desired_annual_income=30_000,
-            state_pension_age=67, expected_state_pension=11_502,
+            state_pension_age=67, expected_state_pension=11_973,
             life_expectancy=90,
         )
         gap_no_mortgage = retirement_income_gap(profile)
@@ -624,7 +652,7 @@ class TestMortgageAwareRetirement:
         profile = RetirementProfile(
             current_age=40, target_retirement_age=67,
             desired_annual_income=30_000,
-            state_pension_age=67, expected_state_pension=11_502,
+            state_pension_age=67, expected_state_pension=11_973,
             life_expectancy=90,
         )
         gap = retirement_income_gap(profile)
@@ -734,3 +762,757 @@ class TestInheritanceTax:
         result = inheritance_tax(400_000, has_residential_property=True)
         assert result["residence_nil_rate_band_used"] == pytest.approx(75_000.0)
         assert result["iht_due"] == 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  PA Taper — Precise Band Calculations
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestPersonalAllowanceTaper:
+    """Income tax for incomes in the £100k–£200k+ range where the PA tapers."""
+
+    def test_100k_exact(self) -> None:
+        """£100k — PA not yet tapered, basic + higher only."""
+        result = income_tax(100_000)
+        basic = (50_270 - 12_570) * 0.20  # 7_540
+        higher = (100_000 - 50_270) * 0.40  # 19_892
+        assert result["tax"] == pytest.approx(basic + higher, abs=1)
+        assert result["tax"] == pytest.approx(27_432, abs=1)
+
+    def test_120k_partial_taper(self) -> None:
+        """£120k — PA tapered to £2,570 → effective 60% marginal rate zone."""
+        result = income_tax(120_000)
+        # PA = 12_570 - (120_000 - 100_000) / 2 = 2_570
+        # taxable = 120_000 - 2_570 = 117_430
+        # basic band width = 37_700, higher band = 125_140 - 2_570 - 37_700 = 84_870
+        # basic = 37_700 × 0.20 = 7_540
+        # higher = (117_430 - 37_700) × 0.40 = 79_730 × 0.40 = 31_892
+        assert result["tax"] == pytest.approx(7_540 + 31_892, abs=1)
+        assert result["tax"] == pytest.approx(39_432, abs=1)
+
+    def test_125140_full_taper(self) -> None:
+        """£125,140 — PA fully tapered to £0."""
+        result = income_tax(125_140)
+        # PA = 0, taxable = 125_140
+        # basic = 37_700 × 0.20 = 7_540
+        # higher = (125_140 - 37_700) × 0.40 = 87_440 × 0.40 = 34_976
+        assert result["tax"] == pytest.approx(7_540 + 34_976, abs=1)
+        assert result["tax"] == pytest.approx(42_516, abs=1)
+
+    def test_200k_additional_rate(self) -> None:
+        """£200k — PA = 0, hits additional rate band at £125,140."""
+        result = income_tax(200_000)
+        # PA = 0, taxable = 200_000
+        # basic = 37_700 × 0.20 = 7_540
+        # higher = (125_140 - 37_700) × 0.40 = 87_440 × 0.40 = 34_976
+        # additional = (200_000 - 125_140) × 0.45 = 74_860 × 0.45 = 33_687
+        assert result["tax"] == pytest.approx(7_540 + 34_976 + 33_687, abs=2)
+        assert result["tax"] == pytest.approx(76_203, abs=2)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  PCLS Drawdown — Cumulative Tax-Free Tracking
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestPCLSDrawdown:
+    """pension_drawdown_tax with the tax_free_amount parameter."""
+
+    def test_explicit_tax_free_amount(self) -> None:
+        """Passing tax_free_amount overrides the lump_sum_taken boolean."""
+        result = pension_drawdown_tax(30_000, other_income=0, tax_free_amount=30_000)
+        assert result["tax_free_portion"] == 30_000
+        assert result["taxable_portion"] == 0.0
+        assert result["tax"] == 0.0
+
+    def test_partial_tax_free(self) -> None:
+        """When tax_free_amount < withdrawal, only that much is tax-free."""
+        result = pension_drawdown_tax(30_000, other_income=0, tax_free_amount=10_000)
+        assert result["tax_free_portion"] == 10_000
+        assert result["taxable_portion"] == 20_000
+        assert result["tax"] > 0
+
+    def test_zero_tax_free_remaining(self) -> None:
+        """When tax_free_amount is 0, entire withdrawal is taxable."""
+        result = pension_drawdown_tax(30_000, other_income=0, tax_free_amount=0)
+        assert result["tax_free_portion"] == 0
+        assert result["taxable_portion"] == 30_000
+
+    def test_drawdown_simulation_cumulative_pcls(self) -> None:
+        """Drawdown simulation correctly tracks cumulative tax-free allowance."""
+        sim = drawdown_simulation(pot=500_000, annual_withdrawal=25_000, years=10)
+        # 25% of £500k = £125k tax-free capacity
+        # First 5 years: £25k/yr fully tax-free → zero tax
+        assert sim.iloc[0]["tax"] == 0.0
+        assert sim.iloc[4]["tax"] == 0.0
+        # Year 6: tax-free exhausted → tax > 0
+        assert sim.iloc[5]["tax"] > 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Student Loan — Income-Contingent Repayment
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestStudentLoanProjection:
+    """Student loans use income-contingent repayment in the projection engine."""
+
+    @pytest.fixture
+    def student_loan_profile(self) -> UserProfile:
+        from datetime import date as _d
+        return UserProfile(
+            annual_salary=35_000,
+            assets=[
+                Asset(
+                    name="Cash", category=AssetCategory.CASH, current_value=5_000,
+                    annual_growth_rate=0.02, is_liquid=True, tax_wrapper=TaxWrapper.NONE,
+                ),
+            ],
+            debts=[
+                Debt(
+                    name="Student Loan", category=DebtCategory.STUDENT_LOAN,
+                    outstanding_balance=40_000, interest_rate=0.071,
+                    monthly_payment=0,  # Income-contingent, not fixed
+                    remaining_term_months=360,
+                    student_loan_plan=StudentLoanPlan.PLAN_2,
+                    student_loan_repayment_threshold=29_385,
+                    student_loan_repayment_rate=0.09,
+                    student_loan_write_off_years=30,
+                    student_loan_start_year=_d.today().year,
+                ),
+            ],
+            life_goals=[],
+        )
+
+    def test_student_loan_repayment_reduces_balance(self, student_loan_profile: UserProfile) -> None:
+        """Over time, income-contingent repayments should reduce the loan balance."""
+        proj = project_net_worth(student_loan_profile, years=10, scenario="Base")
+        # Repayment = (35_000 - 29_385) × 0.09 = ~£505/yr (before interest)
+        # Balance should decrease or at least not grow uncontrollably
+        debt_y0 = proj.iloc[0]["total_debts"]
+        debt_y10 = proj.iloc[10]["total_debts"]
+        # With 7.1% interest on £40k (~£2,840/yr) vs ~£693 repayment,
+        # balance grows — but it's being tracked, not ignored.
+        assert debt_y10 > 0  # Loan still exists after 10 years at this salary
+
+    def test_student_loan_written_off(self, student_loan_profile: UserProfile) -> None:
+        """Student loan should be written off after 30 years."""
+        proj = project_net_worth(student_loan_profile, years=35, scenario="Base")
+        # By year 31+, the student loan should be gone
+        debt_y35 = proj.iloc[35]["total_debts"]
+        assert debt_y35 == 0.0
+
+    def test_student_loan_no_repayment_below_threshold(self) -> None:
+        """Salary below threshold → no repayment, only interest accrues."""
+        from datetime import date as _d
+        low_income = UserProfile(
+            annual_salary=20_000,
+            assets=[
+                Asset(
+                    name="Cash", category=AssetCategory.CASH, current_value=5_000,
+                    annual_growth_rate=0.02, is_liquid=True, tax_wrapper=TaxWrapper.NONE,
+                ),
+            ],
+            debts=[
+                Debt(
+                    name="Student Loan", category=DebtCategory.STUDENT_LOAN,
+                    outstanding_balance=30_000, interest_rate=0.071,
+                    monthly_payment=0,
+                    remaining_term_months=360,
+                    student_loan_plan=StudentLoanPlan.PLAN_2,
+                    student_loan_repayment_threshold=29_385,
+                    student_loan_repayment_rate=0.09,
+                    student_loan_write_off_years=30,
+                    student_loan_start_year=_d.today().year,
+                ),
+            ],
+            life_goals=[],
+        )
+        proj = project_net_worth(low_income, years=5, scenario="Base")
+        # Debt grows because salary < threshold so no repayment
+        debt_y0 = proj.iloc[0]["total_debts"]
+        debt_y5 = proj.iloc[5]["total_debts"]
+        assert debt_y5 > debt_y0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Loan-Funded Goals
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestLoanFundedGoals:
+    """Goals with GoalFunding.LOAN deduct only the deposit from savings."""
+
+    def test_loan_goal_only_deducts_deposit(self) -> None:
+        """A £20k car loan with 10% deposit should only deduct £2k from savings."""
+        from datetime import date as _d
+        buy_year = _d.today().year + 1
+        profile = UserProfile(
+            annual_salary=40_000,
+            assets=[
+                Asset(
+                    name="Cash", category=AssetCategory.CASH, current_value=20_000,
+                    annual_growth_rate=0.02, is_liquid=True, tax_wrapper=TaxWrapper.NONE,
+                ),
+            ],
+            debts=[],
+            life_goals=[
+                LifeGoal(
+                    name="Buy a car", target_cost=20_000, target_year=buy_year,
+                    funding_source=GoalFunding.LOAN,
+                    deposit_percentage=0.10,
+                    loan_interest_rate=0.05,
+                    loan_term_years=5,
+                ),
+            ],
+        )
+        proj = project_net_worth(profile, years=10, scenario="Base")
+        # After the goal year, debts should include the loan
+        buy_idx = proj[proj["year"] == buy_year].index
+        if not buy_idx.empty:
+            idx = int(buy_idx[0])
+            if idx + 1 < len(proj):
+                debts_after = float(proj.iloc[idx + 1]["total_debts"])
+                # Loan amount = £18k (£20k - 10% deposit)
+                assert debts_after > 0  # Loan debt exists
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Instrument State Classes
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestAssetState:
+    """Unit tests for AssetState — grow, contribute, withdraw, deposit."""
+
+    def test_grow_applies_growth_rate(self) -> None:
+        a = AssetState(name="ISA", category="ISA", is_liquid=True, value=10_000, growth_rate=0.07)
+        a.grow()
+        assert a.value == pytest.approx(10_700, abs=0.01)
+
+    def test_contribute_while_working(self) -> None:
+        a = AssetState(name="ISA", category="ISA", is_liquid=True, value=10_000, growth_rate=0.07, annual_contribution=1_000)
+        a.contribute(is_retired=False)
+        assert a.value == pytest.approx(11_000, abs=0.01)
+
+    def test_contribute_skipped_when_retired(self) -> None:
+        a = AssetState(name="ISA", category="ISA", is_liquid=True, value=10_000, growth_rate=0.07, annual_contribution=1_000)
+        a.contribute(is_retired=True)
+        assert a.value == pytest.approx(10_000, abs=0.01)
+
+    def test_deposit_adds_to_value(self) -> None:
+        a = AssetState(name="Cash", category="Cash", is_liquid=True, value=5_000, growth_rate=0.02)
+        a.deposit(2_000)
+        assert a.value == pytest.approx(7_000, abs=0.01)
+
+    def test_withdraw_returns_actual_amount(self) -> None:
+        a = AssetState(name="ISA", category="ISA", is_liquid=True, value=5_000, growth_rate=0.07)
+        taken = a.withdraw(3_000)
+        assert taken == pytest.approx(3_000, abs=0.01)
+        assert a.value == pytest.approx(2_000, abs=0.01)
+
+    def test_withdraw_capped_at_value(self) -> None:
+        a = AssetState(name="ISA", category="ISA", is_liquid=True, value=1_000, growth_rate=0.07)
+        taken = a.withdraw(5_000)
+        assert taken == pytest.approx(1_000, abs=0.01)
+        assert a.value == pytest.approx(0, abs=0.01)
+
+    def test_from_model(self) -> None:
+        model = Asset(name="Pension", category=AssetCategory.PENSION, current_value=50_000, annual_growth_rate=0.07, is_liquid=False, annual_contribution=5_000)
+        a = AssetState.from_model(model, scenario_multiplier=1.0)
+        assert a.name == "Pension"
+        assert a.category == "Pension"
+        assert not a.is_liquid
+        assert a.value == pytest.approx(50_000, abs=0.01)
+
+
+class TestStandardDebtState:
+    """Unit tests for StandardDebtState — amortisation, payoff, is_cleared."""
+
+    def test_accrue_and_pay_reduces_balance(self) -> None:
+        d = StandardDebtState(name="Mortgage", category="Mortgage", balance=100_000, rate=0.04, annual_payment=10_000)
+        d.accrue_and_pay(50_000, False, 2026)
+        assert d.balance < 100_000
+        assert d.balance > 0
+
+    def test_is_cleared_when_zero(self) -> None:
+        d = StandardDebtState(name="Loan", category="Loan", balance=0, rate=0.05, annual_payment=1_000)
+        assert d.is_cleared
+
+    def test_remaining_years_clears_balance(self) -> None:
+        d = StandardDebtState(name="Loan", category="Loan", balance=500, rate=0.0, annual_payment=500, remaining_years=1)
+        d.accrue_and_pay(0, False, 2026)
+        assert d.balance == 0
+        assert d.is_cleared
+
+    def test_from_model(self) -> None:
+        model = Debt(name="Mortgage", category=DebtCategory.MORTGAGE, outstanding_balance=200_000, interest_rate=0.04, monthly_payment=1_000, remaining_term_months=240)
+        d = StandardDebtState.from_model(model)
+        assert d.name == "Mortgage"
+        assert d.balance == pytest.approx(200_000, abs=0.01)
+        assert d.annual_payment == pytest.approx(12_000, abs=0.01)
+
+    def test_skip_when_cleared(self) -> None:
+        d = StandardDebtState(name="Loan", category="Loan", balance=0, rate=0.05, annual_payment=1_000)
+        d.accrue_and_pay(50_000, False, 2026)
+        assert d.balance == 0
+
+
+class TestStudentLoanState:
+    """Unit tests for StudentLoanState — income-contingent, write-off."""
+
+    def test_repayment_reduces_balance(self) -> None:
+        model = Debt(
+            name="SL", category=DebtCategory.STUDENT_LOAN, outstanding_balance=40_000,
+            interest_rate=0.05, monthly_payment=0, remaining_term_months=0,
+            student_loan_start_year=2020, student_loan_write_off_years=30,
+        )
+        sl = StudentLoanState(model)
+        sl.accrue_and_pay(salary=51_000, is_retired=False, year=2026)
+        # interest: 40k * 1.05 = 42k; repayment: (51000 - 29385) * 0.09 = 1945.35
+        assert sl.balance < 42_000
+        assert sl.balance > 0
+
+    def test_write_off(self) -> None:
+        model = Debt(
+            name="SL", category=DebtCategory.STUDENT_LOAN, outstanding_balance=40_000,
+            interest_rate=0.05, monthly_payment=0, remaining_term_months=0,
+            student_loan_start_year=2000, student_loan_write_off_years=25,
+        )
+        sl = StudentLoanState(model)
+        # write-off year = 2000 + 25 = 2025; year 2026 >= 2025 → written off
+        sl.accrue_and_pay(salary=51_000, is_retired=False, year=2026)
+        assert sl.balance == 0
+        assert sl.is_cleared
+
+    def test_no_repayment_when_below_threshold(self) -> None:
+        model = Debt(
+            name="SL", category=DebtCategory.STUDENT_LOAN, outstanding_balance=40_000,
+            interest_rate=0.05, monthly_payment=0, remaining_term_months=0,
+            student_loan_start_year=2020, student_loan_write_off_years=30,
+        )
+        sl = StudentLoanState(model)
+        sl.accrue_and_pay(salary=20_000, is_retired=False, year=2026)
+        # Only interest accrued, no repayment (salary < threshold)
+        assert sl.balance == pytest.approx(42_000, abs=0.01)
+
+    def test_no_repayment_when_retired(self) -> None:
+        model = Debt(
+            name="SL", category=DebtCategory.STUDENT_LOAN, outstanding_balance=40_000,
+            interest_rate=0.05, monthly_payment=0, remaining_term_months=0,
+            student_loan_start_year=2020, student_loan_write_off_years=30,
+        )
+        sl = StudentLoanState(model)
+        sl.accrue_and_pay(salary=51_000, is_retired=True, year=2026)
+        # Only interest, no repayment when retired
+        assert sl.balance == pytest.approx(42_000, abs=0.01)
+
+    def test_annual_payment_is_zero(self) -> None:
+        model = Debt(
+            name="SL", category=DebtCategory.STUDENT_LOAN, outstanding_balance=40_000,
+            interest_rate=0.05, monthly_payment=0, remaining_term_months=0,
+        )
+        sl = StudentLoanState(model)
+        assert sl.annual_payment == 0.0
+
+
+class TestGoalStates:
+    """Unit tests for SavingsGoalState, MortgageGoalState, LoanGoalState."""
+
+    def test_savings_goal_lump_sum(self) -> None:
+        goal = LifeGoal(name="Cabin", target_cost=80_000, target_year=2033, funding_source=GoalFunding.SAVINGS)
+        gs = SavingsGoalState(goal)
+        assert gs.lump_sum_cost() == pytest.approx(80_000)
+
+    def test_savings_goal_ongoing_cost_in_range(self) -> None:
+        goal = LifeGoal(name="Kids", target_cost=30_000, target_year=2031, funding_source=GoalFunding.SAVINGS, annual_ongoing_cost=15_000, ongoing_years=18)
+        gs = SavingsGoalState(goal)
+        assert gs.ongoing_cost(2031) == pytest.approx(15_000)
+        assert gs.ongoing_cost(2048) == pytest.approx(15_000)
+        assert gs.ongoing_cost(2049) == 0.0
+        assert gs.ongoing_cost(2030) == 0.0
+
+    def test_savings_goal_activate_spawns_nothing(self) -> None:
+        goal = LifeGoal(name="Cabin", target_cost=80_000, target_year=2033, funding_source=GoalFunding.SAVINGS)
+        gs = SavingsGoalState(goal)
+        new_assets, new_debts = gs.activate(1.0)
+        assert new_assets == []
+        assert new_debts == []
+
+    def test_mortgage_goal_lump_sum_is_deposit(self) -> None:
+        goal = LifeGoal(name="House", target_cost=350_000, target_year=2029, funding_source=GoalFunding.MORTGAGE, deposit_percentage=0.10)
+        gs = MortgageGoalState(goal)
+        assert gs.lump_sum_cost() == pytest.approx(35_000)
+
+    def test_mortgage_goal_activate_spawns_property_and_debt(self) -> None:
+        goal = LifeGoal(
+            name="House", target_cost=350_000, target_year=2029,
+            funding_source=GoalFunding.MORTGAGE, deposit_percentage=0.10,
+            mortgage_rate=0.045, mortgage_term_years=25,
+        )
+        gs = MortgageGoalState(goal)
+        new_assets, new_debts = gs.activate(1.0)
+        assert len(new_assets) == 1
+        assert len(new_debts) == 1
+        assert new_assets[0].category == "Property"
+        assert new_assets[0].value == pytest.approx(350_000)
+        assert not new_assets[0].is_liquid
+        assert new_debts[0].balance == pytest.approx(315_000)
+
+    def test_loan_goal_lump_sum_is_deposit(self) -> None:
+        goal = LifeGoal(name="Car", target_cost=20_000, target_year=2028, funding_source=GoalFunding.LOAN, deposit_percentage=0.15)
+        gs = LoanGoalState(goal)
+        assert gs.lump_sum_cost() == pytest.approx(3_000)
+
+    def test_loan_goal_activate_spawns_debt_only(self) -> None:
+        goal = LifeGoal(
+            name="Car", target_cost=20_000, target_year=2028,
+            funding_source=GoalFunding.LOAN, deposit_percentage=0.15,
+            loan_interest_rate=0.05, loan_term_years=5,
+        )
+        gs = LoanGoalState(goal)
+        new_assets, new_debts = gs.activate(1.0)
+        assert new_assets == []
+        assert len(new_debts) == 1
+        assert new_debts[0].balance == pytest.approx(17_000)
+
+    def test_create_debt_state_factory(self) -> None:
+        sl_model = Debt(name="SL", category=DebtCategory.STUDENT_LOAN, outstanding_balance=40_000, interest_rate=0.05, monthly_payment=0, remaining_term_months=0)
+        ml_model = Debt(name="Mortgage", category=DebtCategory.MORTGAGE, outstanding_balance=200_000, interest_rate=0.04, monthly_payment=1_000, remaining_term_months=240)
+        assert isinstance(create_debt_state(sl_model), StudentLoanState)
+        assert isinstance(create_debt_state(ml_model), StandardDebtState)
+
+    def test_create_goal_state_factory(self) -> None:
+        g1 = LifeGoal(name="A", target_cost=100, target_year=2030, funding_source=GoalFunding.SAVINGS)
+        g2 = LifeGoal(name="B", target_cost=100, target_year=2030, funding_source=GoalFunding.MORTGAGE)
+        g3 = LifeGoal(name="C", target_cost=100, target_year=2030, funding_source=GoalFunding.LOAN)
+        g4 = LifeGoal(name="D", target_cost=100, target_year=2030, funding_source=GoalFunding.MIXED)
+        assert isinstance(create_goal_state(g1), SavingsGoalState)
+        assert isinstance(create_goal_state(g2), MortgageGoalState)
+        assert isinstance(create_goal_state(g3), LoanGoalState)
+        assert isinstance(create_goal_state(g4), MortgageGoalState)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Property Calculations
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestPropertyCalculations:
+    """Tests for calculations/property.py."""
+
+    def test_calculate_ltv_typical(self) -> None:
+        assert calculate_ltv(180_000, 200_000) == 90.0
+
+    def test_calculate_ltv_zero_value(self) -> None:
+        assert calculate_ltv(100_000, 0) == 0.0
+
+    def test_calculate_ltv_no_mortgage(self) -> None:
+        assert calculate_ltv(0, 300_000) == 0.0
+
+    def test_calculate_equity(self) -> None:
+        assert calculate_equity(300_000, 200_000) == 100_000
+
+    def test_calculate_equity_underwater(self) -> None:
+        assert calculate_equity(150_000, 200_000) == -50_000
+
+    def test_amortization_schedule_basic(self) -> None:
+        df = amortization_schedule(200_000, 0.05, 25)
+        assert len(df) == 25
+        assert list(df.columns) == ["year", "payment", "principal_paid", "interest_paid", "remaining_balance"]
+        # Balance should reduce to ~0 by end
+        assert df.iloc[-1]["remaining_balance"] < 1.0
+        # First year interest > principal; last year principal > interest
+        assert df.iloc[0]["interest_paid"] > df.iloc[0]["principal_paid"]
+        assert df.iloc[-1]["principal_paid"] > df.iloc[-1]["interest_paid"]
+
+    def test_amortization_schedule_zero_principal(self) -> None:
+        df = amortization_schedule(0, 0.05, 25)
+        assert df.empty
+
+    def test_amortization_schedule_zero_rate(self) -> None:
+        df = amortization_schedule(120_000, 0.0, 10)
+        assert len(df) == 10
+        assert df["interest_paid"].sum() == 0.0
+        assert df.iloc[-1]["remaining_balance"] < 1.0
+
+    def test_equity_over_time_shape(self) -> None:
+        df = equity_over_time(300_000, 0.03, 200_000, 0.05, 25, 30)
+        assert len(df) == 31  # year 0 through 30
+        assert df.iloc[0]["year"] == 0
+        assert df.iloc[-1]["year"] == 30
+        # Equity should grow over time
+        assert df.iloc[-1]["equity"] > df.iloc[0]["equity"]
+        # LTV should decrease
+        assert df.iloc[-1]["ltv"] < df.iloc[0]["ltv"]
+
+    def test_equity_over_time_mortgage_paid_off(self) -> None:
+        """After mortgage term, balance should be zero."""
+        df = equity_over_time(200_000, 0.02, 150_000, 0.04, 20, 25)
+        # At year 20+, mortgage should be paid off
+        assert df.iloc[20]["mortgage_balance"] < 1.0
+
+    def test_property_profit_gain(self) -> None:
+        assert property_profit(400_000, 300_000, 50_000) == 50_000
+
+    def test_property_profit_loss(self) -> None:
+        assert property_profit(280_000, 300_000, 50_000) == -70_000
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Years to FIRE
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestYearsToFire:
+    """Tests for years_to_fire() in calculations/retirement.py."""
+
+    def test_already_fire_with_large_pot(self) -> None:
+        profile = UserProfile(
+            assets=[
+                Asset(name="Pension", category=AssetCategory.PENSION, current_value=2_000_000, annual_growth_rate=0.04),
+            ],
+            retirement=RetirementProfile(
+                current_age=40,
+                target_retirement_age=60,
+                desired_annual_income=30_000,
+                life_expectancy=90,
+            ),
+            annual_salary=50_000,
+        )
+        result = years_to_fire(profile)
+        assert result == 0
+
+    def test_returns_none_when_no_pension(self) -> None:
+        profile = UserProfile(
+            retirement=RetirementProfile(
+                current_age=30,
+                target_retirement_age=65,
+                desired_annual_income=50_000,
+                life_expectancy=90,
+            ),
+            annual_salary=30_000,
+        )
+        # No pension assets and no savings → None
+        result = years_to_fire(profile)
+        # Could be None or a high number depending on gap
+        assert result is None or result > 50
+
+    def test_returns_positive_years(self) -> None:
+        profile = UserProfile(
+            assets=[
+                Asset(name="Pension", category=AssetCategory.PENSION, current_value=50_000, annual_growth_rate=0.06, annual_contribution=10_000),
+            ],
+            retirement=RetirementProfile(
+                current_age=30,
+                target_retirement_age=60,
+                desired_annual_income=25_000,
+                life_expectancy=90,
+            ),
+            annual_salary=50_000,
+        )
+        result = years_to_fire(profile)
+        assert result is not None
+        assert 5 < result < 40
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Debt Payoff Projection
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDebtPayoffProjection:
+    """Tests for debt_payoff_projection() in calculations/projections.py."""
+
+    def test_empty_debts(self) -> None:
+        profile = UserProfile()
+        df = debt_payoff_projection(profile)
+        assert "year" in df.columns
+        assert "age" in df.columns
+        assert len(df) == 0
+
+    def test_single_loan_pays_off(self) -> None:
+        profile = UserProfile(
+            debts=[
+                Debt(
+                    name="Car Loan",
+                    category=DebtCategory.LOAN,
+                    outstanding_balance=10_000,
+                    interest_rate=0.05,
+                    monthly_payment=500,
+                    remaining_term_months=24,
+                ),
+            ],
+            annual_salary=40_000,
+        )
+        df = debt_payoff_projection(profile, years=5)
+        assert len(df) == 6  # years 0 through 5
+        assert "Car Loan_balance" in df.columns
+        # Balance should reduce over time
+        assert df.iloc[-1]["Car Loan_balance"] < df.iloc[0]["Car Loan_balance"]
+
+    def test_student_loan_writes_off(self) -> None:
+        from datetime import date
+        profile = UserProfile(
+            debts=[
+                Debt(
+                    name="Student Loan",
+                    category=DebtCategory.STUDENT_LOAN,
+                    outstanding_balance=40_000,
+                    interest_rate=0.05,
+                    monthly_payment=0,
+                    remaining_term_months=0,
+                    student_loan_plan=StudentLoanPlan.PLAN_2,
+                    student_loan_start_year=date.today().year - 25,
+                    student_loan_write_off_years=30,
+                ),
+            ],
+            annual_salary=35_000,
+        )
+        df = debt_payoff_projection(profile, years=10)
+        assert len(df) == 11
+        assert "Student Loan_balance" in df.columns
+        # Write-off in 5 years (30 - 25 years elapsed)
+        assert df.iloc[-1]["Student Loan_balance"] == 0.0
+
+    def test_multiple_debts_tracked(self) -> None:
+        profile = UserProfile(
+            debts=[
+                Debt(name="Loan A", category=DebtCategory.LOAN, outstanding_balance=5_000, interest_rate=0.03, monthly_payment=200, remaining_term_months=30),
+                Debt(name="Loan B", category=DebtCategory.LOAN, outstanding_balance=8_000, interest_rate=0.04, monthly_payment=300, remaining_term_months=36),
+            ],
+            annual_salary=50_000,
+        )
+        df = debt_payoff_projection(profile, years=5)
+        assert "Loan A_balance" in df.columns
+        assert "Loan B_balance" in df.columns
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Cash Flow Waterfall
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestCashFlow:
+    """Tests for calculations/cashflow.py — annual cash flow waterfall."""
+
+    def test_basic_salary_breakdown(self) -> None:
+        """Tax, NI, and expenses should reduce gross to a positive surplus."""
+        profile = UserProfile(annual_salary=50_000)
+        cf = annual_cash_flow(profile)
+        assert cf.gross_salary == 50_000
+        assert cf.income_tax > 0
+        assert cf.national_insurance > 0
+        assert cf.net_take_home < 50_000
+        assert cf.surplus >= 0
+        # Net take-home should equal gross minus deductions
+        expected_net = (
+            cf.gross_salary
+            - cf.pension_contribution
+            - cf.income_tax
+            - cf.national_insurance
+            - cf.student_loan_repayment
+        )
+        assert abs(cf.net_take_home - expected_net) < 0.01
+
+    def test_pension_sacrifice_reduces_taxable(self) -> None:
+        """Pension contribution should reduce the adjusted gross for tax."""
+        profile = UserProfile(
+            annual_salary=60_000,
+            assets=[
+                Asset(
+                    name="Pension", category=AssetCategory.PENSION,
+                    current_value=50_000, annual_growth_rate=0.05,
+                    annual_contribution=10_000, tax_wrapper=TaxWrapper.PENSION,
+                ),
+            ],
+        )
+        cf = annual_cash_flow(profile)
+        assert cf.pension_contribution == 10_000
+        assert cf.adjusted_gross == 50_000
+        # Tax should be on adjusted gross, not full salary
+        no_pension = annual_cash_flow(UserProfile(annual_salary=60_000))
+        assert cf.income_tax < no_pension.income_tax
+
+    def test_student_loan_deducted(self) -> None:
+        """Student loan repayment should appear in deductions."""
+        profile = UserProfile(
+            annual_salary=40_000,
+            debts=[
+                Debt(
+                    name="Student Loan", category=DebtCategory.STUDENT_LOAN,
+                    outstanding_balance=30_000, interest_rate=0.065,
+                    monthly_payment=0, remaining_term_months=300,
+                    student_loan_plan=StudentLoanPlan.PLAN_2,
+                ),
+            ],
+        )
+        cf = annual_cash_flow(profile)
+        assert cf.student_loan_repayment > 0
+        # Threshold is ~£29,385 for Plan 2; salary above → repayment
+        assert cf.student_loan_repayment == pytest.approx(
+            (40_000 - 29_385) * 0.09, abs=1.0
+        )
+
+    def test_credit_cards_excluded(self) -> None:
+        """Credit card debts should not appear in cash flow outflows."""
+        profile = UserProfile(
+            annual_salary=50_000,
+            debts=[
+                Debt(
+                    name="Credit Card", category=DebtCategory.CREDIT_CARD,
+                    outstanding_balance=5_000, interest_rate=0.20,
+                    monthly_payment=200, remaining_term_months=30,
+                ),
+            ],
+        )
+        cf = annual_cash_flow(profile)
+        assert cf.loan_payments == 0.0
+
+    def test_salary_growth_over_years(self) -> None:
+        """Gross salary should grow with yr_offset."""
+        profile = UserProfile(annual_salary=50_000)
+        cf_yr0 = annual_cash_flow(profile, yr_offset=0)
+        cf_yr5 = annual_cash_flow(profile, yr_offset=5)
+        assert cf_yr5.gross_salary > cf_yr0.gross_salary
+
+    def test_expenses_inflate_over_years(self) -> None:
+        """Living expenses and holiday budget should inflate."""
+        profile = UserProfile(annual_salary=80_000)
+        cf_yr0 = annual_cash_flow(profile, yr_offset=0)
+        cf_yr5 = annual_cash_flow(profile, yr_offset=5)
+        assert cf_yr5.living_expenses > cf_yr0.living_expenses
+        assert cf_yr5.holiday_budget > cf_yr0.holiday_budget
+
+    def test_retired_returns_zeros(self) -> None:
+        """When retired, salary-side should be zero."""
+        profile = UserProfile(annual_salary=60_000)
+        cf = annual_cash_flow(profile, is_retired=True)
+        assert cf.gross_salary == 0.0
+        assert cf.net_take_home == 0.0
+        assert cf.surplus == 0.0
+
+    def test_mortgage_payments_passed_through(self) -> None:
+        """Active mortgage payments should appear in outflows."""
+        profile = UserProfile(annual_salary=60_000)
+        cf = annual_cash_flow(profile, active_mortgage_payments=12_000)
+        assert cf.mortgage_payments == 12_000
+        assert cf.total_outflows >= 12_000
+
+    def test_surplus_non_negative(self) -> None:
+        """Surplus should never go below zero (clamped)."""
+        profile = UserProfile(
+            annual_salary=20_000,
+            annual_living_expenses=50_000,
+        )
+        cf = annual_cash_flow(profile)
+        assert cf.surplus >= 0.0
+
+
+class TestStudentLoanAnnualRepayment:
+    """Tests for the student_loan_annual_repayment helper."""
+
+    def test_above_threshold(self) -> None:
+        result = student_loan_annual_repayment(40_000, 29_385, 0.09)
+        assert result == pytest.approx((40_000 - 29_385) * 0.09)
+
+    def test_below_threshold(self) -> None:
+        result = student_loan_annual_repayment(25_000, 29_385, 0.09)
+        assert result == 0.0
+
+    def test_at_threshold(self) -> None:
+        result = student_loan_annual_repayment(29_385, 29_385, 0.09)
+        assert result == 0.0

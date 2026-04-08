@@ -31,41 +31,41 @@ def test_profile_renders_with_sample_data(sample_profile: UserProfile) -> None:
     assert len(at.metric) >= 3, "Expected at least 3 KPI metrics (assets, debts, net worth)"
 
 
-# ── 3. Plan page with empty profile ──────────────────────────────────────
+# ── 3. Property page with empty profile ──────────────────────────────────
 
-def test_plan_handles_empty_profile(empty_profile: UserProfile) -> None:
-    """Plan page shows an info message instead of crashing when profile is empty."""
-    at = AppTest.from_file("pages/2_Plan.py")
+def test_property_handles_empty_profile(empty_profile: UserProfile) -> None:
+    """Property page shows an info message when no properties exist."""
+    at = AppTest.from_file("pages/2_Property.py")
     at.session_state.profile = empty_profile
     at.run()
     assert not at.error, [e.value for e in at.error]
     assert len(at.info) >= 1, "Expected an info message for empty profile"
 
 
-# ── 4. Plan page renders with sample data ─────────────────────────────────
+# ── 4. Goals page with empty profile ─────────────────────────────────────
 
-def test_plan_renders_with_sample_data(sample_profile: UserProfile) -> None:
-    """Plan page renders projections, KPIs, and charts with sample data."""
-    at = AppTest.from_file("pages/2_Plan.py")
-    at.session_state.profile = sample_profile
+def test_goals_handles_empty_profile(empty_profile: UserProfile) -> None:
+    """Goals page shows an info message when no goals exist."""
+    at = AppTest.from_file("pages/5_Goals.py")
+    at.session_state.profile = empty_profile
     at.run()
     assert not at.error, [e.value for e in at.error]
-    assert len(at.metric) >= 4, "Expected at least 4 KPI metrics"
+    assert len(at.info) >= 1, "Expected an info message for empty profile"
 
 
-# ── 5. Calculation-to-UI integration ─────────────────────────────────────
+# ── 5. Dashboard KPI integration ─────────────────────────────────────────
 
-def test_net_worth_calculations_match_plan(sample_profile: UserProfile) -> None:
-    """The net worth metric displayed on the Plan page matches the calculation module."""
+def test_dashboard_net_worth_matches_calculation(sample_profile: UserProfile) -> None:
+    """The net worth metric on the dashboard matches the calculation module."""
     expected_nw = net_worth(sample_profile.assets, sample_profile.debts)
     expected_label = format_gbp(expected_nw)
 
-    at = AppTest.from_file("pages/2_Plan.py")
+    at = AppTest.from_file("app.py")
     at.session_state.profile = sample_profile
     at.run()
 
-    nw_metric = at.metric[0]  # 1st metric is "Net Worth"
-    assert nw_metric.label == "Net Worth"
-    assert nw_metric.value == expected_label, (
-        f"Plan shows {nw_metric.value} but calculation gives {expected_label}"
+    nw_metrics = [m for m in at.metric if m.label == "Net Worth"]
+    assert nw_metrics, "Expected a Net Worth metric on the dashboard"
+    assert nw_metrics[0].value == expected_label, (
+        f"Dashboard shows {nw_metrics[0].value} but calculation gives {expected_label}"
     )

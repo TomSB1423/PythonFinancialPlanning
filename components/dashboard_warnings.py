@@ -86,37 +86,7 @@ def get_financial_health_checks(profile: UserProfile) -> list[HealthAlert]:
             )
         )
 
-    # ── Check 2: Liquidity Months (Emergency Reserve) ────────────────────
-    monthly_expenses = (
-        (profile.annual_living_expenses or 0) + (profile.annual_holiday_budget or 0)
-    ) / 12
-    monthly_debt_service = sum(d.monthly_payment for d in profile.debts) or 0
-    total_monthly_needs = monthly_expenses + monthly_debt_service
-
-    if total_monthly_needs > 0:
-        liquidity_months = liquid_assets / total_monthly_needs if total_monthly_needs > 0 else 0
-        if liquidity_months < 3:
-            alerts.append(
-                HealthAlert(
-                    severity="error",
-                    title="Insufficient Emergency Reserve",
-                    message=f"Your liquid assets cover only {liquidity_months:.1f} months of expenses. "
-                    "Aim for 6+ months as a safety buffer.",
-                    action_page="Assets and Debts",
-                )
-            )
-        elif liquidity_months < 6:
-            alerts.append(
-                HealthAlert(
-                    severity="warning",
-                    title="Low Emergency Reserve",
-                    message=f"Your liquid assets cover {liquidity_months:.1f} months of expenses. "
-                    "Consider building toward 6 months.",
-                    action_page="Assets and Debts",
-                )
-            )
-
-    # ── Check 3: Unfunded Goals ────────────────────────────────────────
+    # ── Check 2: Unfunded Goals ────────────────────────────────────────
     total_goal_costs = sum(g.target_cost for g in profile.life_goals)
     unfunded_goals = [g for g in profile.life_goals if g.target_cost > liquid_assets]
 
@@ -209,7 +179,7 @@ def get_financial_health_checks(profile: UserProfile) -> list[HealthAlert]:
                     severity="info",
                     title="Student Loan Using Defaults",
                     message=f"'{loan.name}' is using default Plan 2 repayment settings "
-                    "(£27,295 threshold, 9% rate, 30-year write-off). "
+                    "(£29,385 threshold, 9% rate, 30-year write-off). "
                     "Review and confirm these match your actual loan terms.",
                     action_page="Assets and Debts",
                 )

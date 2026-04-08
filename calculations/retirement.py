@@ -7,14 +7,19 @@ from typing import TypedDict
 import pandas as pd
 
 from calculations.tax import pension_drawdown_tax
-from models.assumptions import INFLATION_RATE
-from models.financial_data import RetirementProfile
+from models.assumptions import INFLATION_RATE, PENSION_TAX_FREE_LUMP_SUM_RATE
+from models.financial_data import Asset, AssetCategory, RetirementProfile, UserProfile
+
+INVESTABLE_CATEGORIES: frozenset[AssetCategory] = frozenset({
+    AssetCategory.PENSION,
+    AssetCategory.ISA,
+    AssetCategory.GIA,
+})
 
 
 class RetirementIncomeGapResult(TypedDict):
     desired_annual_income_today: float
     state_pension: float
-    db_pensions: float
     guaranteed_income: float
     annual_gap: float
     phase1_years: int
@@ -63,26 +68,15 @@ def retirement_income_gap(
     """
     desired_real = profile.desired_annual_income  # in today's money
 
-    # DB pensions available from retirement
-    db_at_retirement = sum(
-        db.annual_income for db in profile.defined_benefit_pensions
-        if db.start_age <= profile.target_retirement_age
-    )
-    # DB pensions that start later (between retirement and SPA)
-    db_at_spa = sum(
-        db.annual_income for db in profile.defined_benefit_pensions
-        if db.start_age <= profile.state_pension_age
-    )
-
     # Phase 1: retirement to state pension age (no state pension)
     phase1_years = max(0, profile.state_pension_age - profile.target_retirement_age)
-    phase1_guaranteed = db_at_retirement
+    phase1_guaranteed = 0.0
     phase1_gap = max(0, desired_real - phase1_guaranteed)
 
     # Phase 2: state pension age to life expectancy
     phase2_years = max(0, profile.life_expectancy - max(profile.target_retirement_age, profile.state_pension_age))
     state_pension = profile.expected_state_pension
-    phase2_guaranteed = state_pension + db_at_spa
+    phase2_guaranteed = state_pension
     phase2_gap = max(0, desired_real - phase2_guaranteed)
 
     # Blended annual gap (weighted average for pot sizing)
@@ -107,7 +101,6 @@ def retirement_income_gap(
     return {
         "desired_annual_income_today": desired_real,
         "state_pension": state_pension,
-        "db_pensions": db_at_spa,
         "guaranteed_income": phase2_guaranteed,
         "annual_gap": round(blended_gap, 2),
         # Phased detail
@@ -198,26 +191,30 @@ def drawdown_simulation(
     other_income: float = 0.0,
     state_pension: float = 0.0,
     state_pension_starts_year: int = 0,
-    db_pension_schedule: list[tuple[int, float]] | None = None,
     additional_annual_cost: float = 0.0,
     additional_cost_starts_year: int = 0,
     use_tax_free_cash_on_first_withdrawal: bool = True,
     mortgage_annual_payment: float = 0.0,
     mortgage_years_remaining: int = 0,
+    start_age: int | None = None,
 ) -> pd.DataFrame:
     """Year-by-year drawdown simulation accounting for inflation and tax.
 
     State pension phases in at *state_pension_starts_year* (1-indexed year
-    within retirement). DB pensions phase in via *db_pension_schedule* —
-    a list of ``(start_year, annual_amount)`` tuples (1-indexed).
+    within retirement).
 
     When *mortgage_annual_payment* > 0, the mortgage cost is added to the
     withdrawal for the first *mortgage_years_remaining* years of retirement.
     """
     rows: list[DrawdownRow] = []
     balance = pot
-    tax_free_cash_used = False
-    _db_schedule = db_pension_schedule or []
+
+    # PCLS: 25% of the initial pot is available tax-free, capped at £268,275
+    pcls_cap = 268_275.0
+    if use_tax_free_cash_on_first_withdrawal:
+        tax_free_remaining = min(pot * PENSION_TAX_FREE_LUMP_SUM_RATE, pcls_cap)
+    else:
+        tax_free_remaining = 0.0
 
     for year in range(1, years + 1):
         # Phase in state pension at the correct year
@@ -225,11 +222,6 @@ def drawdown_simulation(
             year_other_income = other_income + state_pension
         else:
             year_other_income = other_income
-
-        # Phase in DB pensions that start in this year or earlier
-        for db_start, db_amount in _db_schedule:
-            if year >= db_start:
-                year_other_income += db_amount
 
         care_cost = 0.0
         if additional_annual_cost > 0 and additional_cost_starts_year > 0 and year >= additional_cost_starts_year:
@@ -242,7 +234,7 @@ def drawdown_simulation(
         withdrawal_from_pot = max(0, desired_total - year_other_income)
 
         if balance <= 0:
-            rows.append({
+            row: DrawdownRow = {
                 "year": year,
                 "start_balance": 0.0,
                 "withdrawal": 0.0,
@@ -252,18 +244,20 @@ def drawdown_simulation(
                 "other_income": round(year_other_income, 2),
                 "healthcare_cost": round(care_cost, 2),
                 "end_balance": 0.0,
-            })
+            }
+            if start_age is not None:
+                row["age"] = start_age + year - 1  # type: ignore[typeddict-unknown-key]
+            rows.append(row)
             continue
 
         actual_withdrawal = min(withdrawal_from_pot, balance)
-        lump_sum_taken = tax_free_cash_used or not use_tax_free_cash_on_first_withdrawal
-        tax_info = pension_drawdown_tax(actual_withdrawal, year_other_income, lump_sum_taken=lump_sum_taken)
-        if actual_withdrawal > 0 and use_tax_free_cash_on_first_withdrawal and not tax_free_cash_used:
-            tax_free_cash_used = True
+        year_tax_free = min(tax_free_remaining, actual_withdrawal)
+        tax_info = pension_drawdown_tax(actual_withdrawal, year_other_income, tax_free_amount=year_tax_free)
+        tax_free_remaining -= year_tax_free
         growth = (balance - actual_withdrawal) * growth_rate
         end_balance = balance - actual_withdrawal + growth
 
-        rows.append({
+        row = {
             "year": year,
             "start_balance": round(balance, 2),
             "withdrawal": round(actual_withdrawal, 2),
@@ -273,17 +267,25 @@ def drawdown_simulation(
             "other_income": round(year_other_income, 2),
             "healthcare_cost": round(care_cost, 2),
             "end_balance": round(max(0, end_balance), 2),
-        })
+        }
+        if start_age is not None:
+            row["age"] = start_age + year - 1
+        rows.append(row)
         balance = max(0, end_balance)
 
     return pd.DataFrame(rows)
 
 
-def retirement_readiness(current_pension_pot: float, target_pot: float) -> float:
+def investable_pot(assets: list[Asset]) -> float:
+    """Sum of current values for Pension, ISA, and GIA assets."""
+    return sum(a.current_value for a in assets if a.category in INVESTABLE_CATEGORIES)
+
+
+def retirement_readiness(current_pot: float, target_pot: float) -> float:
     """Simple percentage score of how funded retirement is."""
     if target_pot <= 0:
         return 100.0
-    return round(min(100, current_pension_pot / target_pot * 100), 1)
+    return round(min(100, current_pot / target_pot * 100), 1)
 
 
 def healthcare_cost_projection(
@@ -311,3 +313,163 @@ def healthcare_cost_projection(
         future_cost = annual_cost * ((1 + inflation_rate) ** (defer + y))
         total += future_cost / ((1 + growth_rate) ** (defer + y))
     return round(total, 2)
+
+
+# ── FIRE calculation ───────────────────────────────────────────────────────
+
+
+def years_to_fire(
+    profile: UserProfile,
+    growth_rate: float = 0.04,
+    inflation_rate: float = INFLATION_RATE,
+) -> int | None:
+    """Number of years until pension assets reach the required FIRE pot size.
+
+    Returns ``None`` if the target is never reached within 60 years.
+    """
+    from calculations.projections import mortgage_info_at_retirement
+
+    mortgage_info = mortgage_info_at_retirement(profile)
+    gap_result = retirement_income_gap(
+        profile.retirement,
+        mortgage_annual_payment=mortgage_info["annual_mortgage_payment"],
+        mortgage_years_in_retirement=mortgage_info["mortgage_years_in_retirement"],
+    )
+    years_in_retirement = max(
+        0,
+        profile.retirement.life_expectancy - profile.retirement.target_retirement_age,
+    )
+    target = required_pot_size(
+        gap_result["annual_gap"],
+        years_in_retirement,
+        growth_rate=growth_rate,
+        inflation_rate=inflation_rate,
+        mortgage_annual_payment=mortgage_info["annual_mortgage_payment"],
+        mortgage_years_in_retirement=mortgage_info["mortgage_years_in_retirement"],
+    )
+    if target <= 0:
+        return 0
+
+    # Simulate investable pot growth year by year
+    inv_assets = [
+        a for a in profile.assets if a.category in INVESTABLE_CATEGORIES
+    ]
+    pot = sum(a.current_value for a in inv_assets)
+    annual_contribution = sum(a.annual_contribution for a in inv_assets)
+
+    # If no explicit pension contribution, estimate from cash flow surplus
+    if annual_contribution == 0:
+        from calculations.cashflow import annual_cash_flow
+
+        cf = annual_cash_flow(profile, yr_offset=0, is_retired=False)
+        if cf.surplus > 0:
+            annual_contribution = cf.surplus * 0.5  # assume half of surplus to pension
+
+    for yr in range(61):
+        if pot >= target:
+            return yr
+        pot = pot * (1 + growth_rate) + annual_contribution
+
+    return None
+
+
+# ── Action items ───────────────────────────────────────────────────────────
+
+
+class FireAction(TypedDict):
+    severity: str  # "error" | "warning" | "info"
+    title: str
+    message: str
+
+
+def get_fire_actions(
+    profile: UserProfile,
+    fire_number: float,
+    current_pot: float,
+    readiness: float,
+    years_to_fire_val: int | None,
+    monthly_needed: float,
+) -> list[FireAction]:
+    """Return actionable FIRE warnings/suggestions based on current state."""
+    actions: list[FireAction] = []
+    ret = profile.retirement
+
+    # 1. No investable assets at all
+    if current_pot <= 0:
+        actions.append({
+            "severity": "error",
+            "title": "No investable assets",
+            "message": (
+                "You have no Pension, ISA, or GIA assets. "
+                "Add assets on the Profile page to start tracking retirement progress."
+            ),
+        })
+        return actions  # other checks are meaningless with £0
+
+    # 2. Pot shortfall
+    shortfall = fire_number - current_pot
+    if shortfall > 0:
+        actions.append({
+            "severity": "warning",
+            "title": f"Pot shortfall: {_fmt(shortfall)}",
+            "message": (
+                f"Your investable pot ({_fmt(current_pot)}) is "
+                f"{_fmt(shortfall)} short of your FIRE number ({_fmt(fire_number)})."
+            ),
+        })
+
+    # 3. Contribution gap
+    if monthly_needed > 0:
+        actions.append({
+            "severity": "warning",
+            "title": f"Save {_fmt(monthly_needed)}/month to reach FIRE",
+            "message": (
+                f"To bridge the gap by retirement at age {ret.target_retirement_age}, "
+                f"you need to save {_fmt(monthly_needed)} per month across your "
+                "Pension, ISA, and GIA accounts."
+            ),
+        })
+
+    # 4. FIRE age overshoot
+    years_to_ret = ret.target_retirement_age - ret.current_age
+    if years_to_fire_val is not None and years_to_fire_val > years_to_ret:
+        fire_age = ret.current_age + years_to_fire_val
+        actions.append({
+            "severity": "warning",
+            "title": f"FIRE age is {fire_age}, not {ret.target_retirement_age}",
+            "message": (
+                f"At current savings rates you won\u2019t reach financial independence "
+                f"until age {fire_age}\u2014{years_to_fire_val - years_to_ret} years "
+                f"after your target retirement age."
+            ),
+        })
+    elif years_to_fire_val is None:
+        actions.append({
+            "severity": "error",
+            "title": "FIRE target unreachable at current rate",
+            "message": (
+                "At your current savings rate, the FIRE target will not be reached "
+                "within 60 years. Consider increasing contributions or adjusting "
+                "your desired retirement income."
+            ),
+        })
+
+    # 5. Income adjustment suggestion (readiness < 50%)
+    if 0 < readiness < 50 and ret.desired_annual_income > 0:
+        affordable = ret.desired_annual_income * (readiness / 100)
+        actions.append({
+            "severity": "info",
+            "title": "Consider adjusting income target",
+            "message": (
+                f"Your current pot would support roughly {_fmt(affordable)}/yr. "
+                f"Reducing your desired income from {_fmt(ret.desired_annual_income)}/yr "
+                "would improve your readiness score and reduce the savings gap."
+            ),
+        })
+
+    return actions
+
+
+def _fmt(value: float) -> str:
+    """Format a number as £X,XXX."""
+    return f"\u00a3{value:,.0f}"

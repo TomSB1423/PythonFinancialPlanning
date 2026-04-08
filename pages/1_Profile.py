@@ -12,7 +12,6 @@ from models.assumptions import DEFAULT_ASSETS, DEFAULT_DEBTS, DEFAULT_GOALS
 from models.financial_data import (
     Asset,
     Debt,
-    DefinedBenefitPension,
     GoalFunding,
     LifeGoal,
     UserProfile,
@@ -76,26 +75,15 @@ st.divider()
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════
 tab_income, tab_assets, tab_goals, tab_retirement = st.tabs(
-    ["Income & Spending", "Assets & Debts", "Life Goals", "Retirement"]
+    ["Income & Pensions", "Assets & Debts", "Life Goals", "Retirement"]
 )
 
 # ── Tab 1: Income & Spending ──────────────────────────────────────────────
 with tab_income:
     st.subheader("Income")
-    ic1, ic2 = st.columns(2)
-    with ic1:
-        profile.annual_salary = st.number_input(
-            "Annual Salary (£)", 0.0, 500_000.0, float(profile.annual_salary), step=1000.0,
-        )
-    with ic2:
-        profile.monthly_savings = st.number_input(
-            "Monthly Additional Savings (£)",
-            0.0,
-            50_000.0,
-            float(profile.monthly_savings),
-            step=100.0,
-            help="Extra monthly savings beyond asset contributions.",
-        )
+    profile.annual_salary = st.number_input(
+        "Annual Salary (£)", 0.0, 500_000.0, float(profile.annual_salary), step=1000.0,
+    )
 
     st.subheader("Recurring Spending")
     sc1, sc2 = st.columns(2)
@@ -122,6 +110,8 @@ with tab_income:
     st.caption(
         f"Annualized spending: {format_gbp(profile.annual_living_expenses + profile.annual_holiday_budget)}"
     )
+
+
 
 # ── Tab 2: Assets & Debts ────────────────────────────────────────────────
 with tab_assets:
@@ -193,8 +183,10 @@ with tab_assets:
 # ── Tab 3: Life Goals ────────────────────────────────────────────────────
 with tab_goals:
     if profile.life_goals:
+        _goals_current_year = date.today().year
         milestones: list[TimelineMilestone] = [
-            {"event": g.name, "year": g.target_year} for g in profile.life_goals
+            {"event": g.name, "year": g.target_year, "age": ret.current_age + (g.target_year - _goals_current_year)}
+            for g in profile.life_goals
         ]
         fig = milestone_timeline(milestones, title="Life Goals Timeline")
         st.plotly_chart(fig, use_container_width=True)
@@ -224,7 +216,7 @@ with tab_goals:
                         if g.ongoing_years > 0
                         else ""
                     )
-                    + f" = **{format_gbp(total)} total**  (by {g.target_year})"
+                    + f" = **{format_gbp(total)} total**  (age {ret.current_age + (g.target_year - _goals_current_year)})"
                 )
         with col2:
             grand_total = sum(
@@ -247,8 +239,10 @@ with tab_goals:
     # ── Manage Goals ──────────────────────────────────────────────────────
     st.subheader("Manage Goals")
     if profile.life_goals:
+        _current_year = date.today().year
         for i, goal in enumerate(profile.life_goals):
-            with st.expander(f"{goal.name} — {format_gbp(goal.target_cost)} by {goal.target_year}"):
+            _goal_age = ret.current_age + (goal.target_year - _current_year)
+            with st.expander(f"{goal.name} — {format_gbp(goal.target_cost)} at age {_goal_age}"):
                 updated = goal_form(f"edit_goal_{i}", defaults=goal)
                 if updated:
                     profile.life_goals[i] = updated
@@ -356,40 +350,3 @@ with tab_retirement:
             f"Annualized retirement spending: "
             f"{format_gbp(profile.annual_retirement_living_expenses + profile.annual_retirement_holiday_budget)}"
         )
-
-    st.divider()
-
-    st.subheader("Defined Benefit Pensions")
-    num_db = st.number_input(
-        "Number of DB Pensions", 0, 5, len(ret.defined_benefit_pensions), key="ret_num_db"
-    )
-    db_pensions: list[DefinedBenefitPension] = []
-    for i in range(int(num_db)):
-        existing = ret.defined_benefit_pensions[i] if i < len(ret.defined_benefit_pensions) else None
-        dc1, dc2, dc3 = st.columns(3)
-        with dc1:
-            db_name = st.text_input(
-                f"DB {i + 1} Name",
-                value=existing.name if existing else f"DB Pension {i + 1}",
-                key=f"db_name_{i}",
-            )
-        with dc2:
-            db_income = st.number_input(
-                f"DB {i + 1} Annual Income (£)",
-                0.0,
-                100_000.0,
-                value=float(existing.annual_income) if existing else 0.0,
-                key=f"db_inc_{i}",
-            )
-        with dc3:
-            db_start = st.number_input(
-                f"DB {i + 1} Start Age",
-                50,
-                75,
-                value=existing.start_age if existing else 65,
-                key=f"db_start_{i}",
-            )
-        db_pensions.append(
-            DefinedBenefitPension(name=db_name, annual_income=db_income, start_age=int(db_start))
-        )
-    ret.defined_benefit_pensions = db_pensions

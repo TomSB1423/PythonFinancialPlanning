@@ -14,6 +14,7 @@ MATERIAL_COLORS = ["#1976D2", "#388E3C", "#F57C00", "#D32F2F", "#7B1FA2", "#0097
 class TimelineMilestone(TypedDict):
     event: str
     year: int
+    age: int
 
 
 def format_gbp(value: float) -> str:
@@ -64,7 +65,7 @@ def area_chart(
         ))
     fig.update_layout(
         title=title,
-        xaxis_title="Year",
+        xaxis_title=x.title(),
         yaxis_title="Value (£)",
         yaxis_tickformat=",",
         hovermode="x unified",
@@ -91,7 +92,7 @@ def line_chart(
     ))
     fig.update_layout(
         title=title,
-        xaxis_title="Year",
+        xaxis_title=x.title(),
         yaxis_title="Value (£)",
         yaxis_tickformat=",",
         margin=dict(t=40, b=40, l=60, r=20),
@@ -131,21 +132,21 @@ def milestone_timeline(milestones: list[TimelineMilestone], title: str = "Key Mi
     if not milestones:
         return go.Figure().update_layout(title="No milestones to display")
 
-    years = [m["year"] for m in milestones]
+    ages = [m["age"] for m in milestones]
     events = [m["event"] for m in milestones]
 
     fig = go.Figure(go.Scatter(
-        x=years,
-        y=[1] * len(years),
+        x=ages,
+        y=[1] * len(ages),
         mode="markers+text",
-        marker=dict(size=14, color=MATERIAL_COLORS[:len(years)], symbol="diamond"),
+        marker=dict(size=14, color=MATERIAL_COLORS[:len(ages)], symbol="diamond"),
         text=events,
         textposition="top center",
-        hovertemplate="%{text} (%{x})<extra></extra>",
+        hovertemplate="%{text} (age %{x})<extra></extra>",
     ))
     fig.update_layout(
         title=title,
-        xaxis_title="Year",
+        xaxis_title="Age",
         yaxis=dict(visible=False),
         showlegend=False,
         margin=dict(t=40, b=40, l=20, r=20),
@@ -178,11 +179,11 @@ def gauge_chart(value: float, title: str = "", max_val: float = 100) -> go.Figur
 
 class GoalAnnotation(TypedDict):
     name: str
-    year: int
+    age: int
 
 
 class RetirementAnnotation(TypedDict):
-    year: int
+    age: int
     label: str
 
 
@@ -190,7 +191,7 @@ def scenario_band_chart(
     base_df: pd.DataFrame,
     pessimistic_df: pd.DataFrame,
     optimistic_df: pd.DataFrame,
-    x: str = "year",
+    x: str = "age",
     y: str = "net_worth",
     goal_annotations: list[GoalAnnotation] | None = None,
     retirement_annotation: RetirementAnnotation | None = None,
@@ -238,23 +239,23 @@ def scenario_band_chart(
 
     # Goal annotations
     for g in goal_annotations or []:
-        first_year = int(base_df[x].iloc[0])
-        last_year = int(base_df[x].iloc[-1])
-        if first_year <= g["year"] <= last_year:
+        first_val = int(base_df[x].iloc[0])
+        last_val = int(base_df[x].iloc[-1])
+        if first_val <= g["age"] <= last_val:
             fig.add_vline(
-                x=g["year"], line_dash="dash", line_color="#D32F2F", opacity=0.5,
+                x=g["age"], line_dash="dash", line_color="#D32F2F", opacity=0.5,
                 annotation_text=g["name"], annotation_position="top left",
                 annotation_font_size=10,
             )
 
     # Retirement annotation
     if retirement_annotation:
-        first_year = int(base_df[x].iloc[0])
-        last_year = int(base_df[x].iloc[-1])
-        yr = retirement_annotation["year"]
-        if first_year <= yr <= last_year:
+        first_val = int(base_df[x].iloc[0])
+        last_val = int(base_df[x].iloc[-1])
+        val = retirement_annotation["age"]
+        if first_val <= val <= last_val:
             fig.add_vline(
-                x=yr, line_dash="dot", line_color="#1565C0", opacity=0.7,
+                x=val, line_dash="dot", line_color="#1565C0", opacity=0.7,
                 annotation_text=retirement_annotation["label"],
                 annotation_position="top right",
                 annotation_font_size=10,
@@ -262,12 +263,171 @@ def scenario_band_chart(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Year",
+        xaxis_title=x.title(),
         yaxis_title="Value (£)",
         yaxis_tickformat=",",
         hovermode="x unified",
         margin=dict(t=40, b=40, l=60, r=20),
         height=450,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+# ── Cash Flow Charts ───────────────────────────────────────────────────────
+
+def cash_flow_sankey(breakdown: object) -> go.Figure:
+    """Salary → Deductions → Bank Account → Expenses → Surplus Sankey chart.
+
+    *breakdown* is a ``CashFlowBreakdown`` dataclass (imported lazily to
+    avoid circular deps at module level).
+    """
+    # Node indices
+    #  0: Gross Salary
+    #  1: Pension (sacrifice)
+    #  2: Income Tax
+    #  3: National Insurance
+    #  4: Student Loan
+    #  5: Net Take-Home
+    #  6: Mortgage
+    #  7: Loans
+    #  8: Living Expenses
+    #  9: Holidays
+    # 10: Goal Ongoing
+    # 11: Contributions (ISA/GIA)
+    # 12: Surplus
+
+    labels = [
+        "Gross Salary",         # 0
+        "Pension",              # 1
+        "Income Tax",           # 2
+        "National Insurance",   # 3
+        "Student Loan",         # 4
+        "Net Take-Home",        # 5
+        "Mortgage",             # 6
+        "Loans",                # 7
+        "Living Expenses",      # 8
+        "Holidays",             # 9
+        "Goal Costs",           # 10
+        "Contributions",        # 11
+        "Surplus",              # 12
+    ]
+
+    node_colors = [
+        "#1976D2",  # Gross Salary — blue
+        "#7B1FA2",  # Pension — purple
+        "#D32F2F",  # Tax — red
+        "#F57C00",  # NI — orange
+        "#0097A7",  # Student Loan — teal
+        "#388E3C",  # Net Take-Home — green
+        "#D32F2F",  # Mortgage — red
+        "#F57C00",  # Loans — orange
+        "#D32F2F",  # Living — red
+        "#F57C00",  # Holidays — orange
+        "#7B1FA2",  # Goal — purple
+        "#0097A7",  # Contributions — teal
+        "#388E3C",  # Surplus — green
+    ]
+
+    b = breakdown
+    sources: list[int] = []
+    targets: list[int] = []
+    values: list[float] = []
+    link_colors: list[str] = []
+
+    def _add(src: int, tgt: int, val: float, color: str = "rgba(200,200,200,0.4)") -> None:
+        if val > 0:
+            sources.append(src)
+            targets.append(tgt)
+            values.append(val)
+            link_colors.append(color)
+
+    # Salary → deductions
+    _add(0, 1, b.pension_contribution, "rgba(123,31,162,0.25)")
+    _add(0, 2, b.income_tax, "rgba(211,47,47,0.25)")
+    _add(0, 3, b.national_insurance, "rgba(245,124,0,0.25)")
+    _add(0, 4, b.student_loan_repayment, "rgba(0,151,167,0.25)")
+    _add(0, 5, b.net_take_home, "rgba(56,142,60,0.25)")
+
+    # Net Take-Home → expenses
+    _add(5, 6, b.mortgage_payments, "rgba(211,47,47,0.25)")
+    _add(5, 7, b.loan_payments, "rgba(245,124,0,0.25)")
+    _add(5, 8, b.living_expenses, "rgba(211,47,47,0.25)")
+    _add(5, 9, b.holiday_budget, "rgba(245,124,0,0.25)")
+    _add(5, 10, b.goal_ongoing_costs, "rgba(123,31,162,0.25)")
+    _add(5, 11, b.non_pension_contributions, "rgba(0,151,167,0.25)")
+    _add(5, 12, b.surplus, "rgba(56,142,60,0.35)")
+
+    fig = go.Figure(go.Sankey(
+        node=dict(
+            pad=20,
+            thickness=20,
+            line=dict(color="#333", width=0.5),
+            label=[f"{lbl}\n{format_gbp(v)}" if v else lbl for lbl, v in zip(
+                labels,
+                [b.gross_salary, b.pension_contribution, b.income_tax,
+                 b.national_insurance, b.student_loan_repayment, b.net_take_home,
+                 b.mortgage_payments, b.loan_payments, b.living_expenses,
+                 b.holiday_budget, b.goal_ongoing_costs, b.non_pension_contributions,
+                 b.surplus],
+            )],
+            color=node_colors,
+        ),
+        link=dict(source=sources, target=targets, value=values, color=link_colors),
+    ))
+    fig.update_layout(
+        title="Annual Cash Flow",
+        margin=dict(t=40, b=20, l=20, r=20),
+        height=450,
+    )
+    return fig
+
+
+def cash_flow_waterfall(breakdown: object) -> go.Figure:
+    """Waterfall chart stepping from Gross Salary down to Surplus."""
+    b = breakdown
+
+    categories: list[str] = []
+    amounts: list[float] = []
+    measures: list[str] = []
+
+    def _step(name: str, value: float, measure: str = "relative") -> None:
+        if value != 0 or measure == "total":
+            categories.append(name)
+            amounts.append(value)
+            measures.append(measure)
+
+    _step("Gross Salary", b.gross_salary, "absolute")
+    _step("Pension", -b.pension_contribution)
+    _step("Income Tax", -b.income_tax)
+    _step("Nat. Insurance", -b.national_insurance)
+    _step("Student Loan", -b.student_loan_repayment)
+    _step("Net Take-Home", b.net_take_home, "total")
+    _step("Mortgage", -b.mortgage_payments)
+    _step("Loans", -b.loan_payments)
+    _step("Living Expenses", -b.living_expenses)
+    _step("Holidays", -b.holiday_budget)
+    _step("Goal Costs", -b.goal_ongoing_costs)
+    _step("Contributions", -b.non_pension_contributions)
+    _step("Surplus", b.surplus, "total")
+
+    fig = go.Figure(go.Waterfall(
+        x=categories,
+        y=amounts,
+        measure=measures,
+        increasing=dict(marker_color="#388E3C"),
+        decreasing=dict(marker_color="#D32F2F"),
+        totals=dict(marker_color="#1976D2"),
+        textposition="outside",
+        text=[format_gbp(abs(v)) for v in amounts],
+        hovertemplate="%{x}: £%{y:,.0f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Salary Breakdown",
+        yaxis_title="Value (£)",
+        yaxis_tickformat=",",
+        margin=dict(t=40, b=60, l=60, r=20),
+        height=450,
+        showlegend=False,
     )
     return fig
